@@ -54,7 +54,16 @@ Prefer adapting her existing code/patterns from these over writing new approache
 - MediaPipe 1.1.0 has **no `mp.solutions.pose`**; use the Tasks API (`mp.tasks.vision.PoseLandmarker` + a downloaded `.task` model). Code from the Pose race repo must be adapted.
 - Only `opencv-contrib-python` (MediaPipe's dependency); never also install `opencv-python`.
 - OpenCV 5 and pygame both bundle SDL2 → macOS prints "Class SDL... is implemented in both" warnings. Don't use `cv2.imshow`; draw camera previews in pygame.
-- pyaudio needs `brew install portaudio` before `pip install pyaudio`.
+- pyaudio needs PortAudio. On this Mac (no Homebrew) PortAudio v19.7.0 was built from source as a static, arm64-only library into `~/.local/portaudio` (headers copied manually from the source `include/`, including `pa_mac_core.h`). pyaudio 0.2.14 was installed with:
+  `ARCHFLAGS="-arch arm64" CFLAGS="-I$HOME/.local/portaudio/include" LDFLAGS="-L$HOME/.local/portaudio/lib -framework CoreAudio -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework CoreServices" pip install pyaudio`
+  Recreating the venv means re-running that command; a plain `pip install -r requirements.txt` fails on pyaudio.
+
+## UNO Q notes
+
+- Board apps live in `~/ArduinoApps` (clone of github.com/clabar01/ArduinoApps); deploy with `python3 tools/deploy.py <app>` from there (see that repo's CLAUDE.md).
+- App Python runs in a Docker container on its own network: `wlan0` is not visible and socket tricks return a 172.x address. The board's real IP is in the `HOST_IP` environment variable.
+- LED matrix pattern (from `minifig_tracker`): Python owns the logic and calls Bridge providers in the sketch (`show_dot(col,row)`, `clear_matrix()`); the sketch guards matrix writes with a `K_MUTEX`. Matrix is 13 cols × 8 rows.
+- `tools/advertise_board.py` (this repo) advertises the board over mDNS for App Lab; reads `tools/board_secrets.py` (git-ignored).
 
 ## Status
 

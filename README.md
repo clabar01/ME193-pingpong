@@ -23,7 +23,7 @@ docs/     write-up material
 ## Setup (macOS)
 
 ```bash
-brew install portaudio          # needed by pyaudio
+brew install portaudio          # needed by pyaudio (without Homebrew: see CLAUDE.md)
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt

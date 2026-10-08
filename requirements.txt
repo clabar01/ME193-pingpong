@@ -11,3 +11,5 @@ paho-mqtt
 pygame-ce
 # pyaudio needs the PortAudio C library first:  brew install portaudio
 pyaudio
+# Advertises the UNO Q over mDNS (tools/advertise_board.py)
+zeroconf
