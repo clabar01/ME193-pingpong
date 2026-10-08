@@ -1,0 +1,13 @@
+# Laptop-side dependencies. Install with:  pip install -r requirements.txt
+numpy
+# MediaPipe needs the "contrib" build of OpenCV; don't also install opencv-python
+# (two packages would fight over the same cv2 module).
+opencv-contrib-python
+mediapipe
+pupil-apriltags
+paho-mqtt
+# pygame-ce is the community fork of pygame (still "import pygame"). Plain pygame
+# has no prebuilt package for Python 3.14 and fails to build on this Mac.
+pygame-ce
+# pyaudio needs the PortAudio C library first:  brew install portaudio
+pyaudio
