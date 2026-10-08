@@ -58,12 +58,26 @@ Prefer adapting her existing code/patterns from these over writing new approache
   `ARCHFLAGS="-arch arm64" CFLAGS="-I$HOME/.local/portaudio/include" LDFLAGS="-L$HOME/.local/portaudio/lib -framework CoreAudio -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework CoreServices" pip install pyaudio`
   Recreating the venv means re-running that command; a plain `pip install -r requirements.txt` fails on pyaudio.
 
+## Two-folder setup
+
+- **`~/ME193-pingpong`** (this repo, github.com/clabar01/ME193-pingpong): laptop code — game, camera, MQTT, sounds.
+- **`~/ArduinoApps`** (github.com/clabar01/ArduinoApps): board code. **All UNO Q apps for this project go there** (planned: `paddle_imu` for swing detection, `pong_display` for the LED matrix ball), never in this repo.
+- Deploy board apps with `python3 tools/deploy.py <app>` from `~/ArduinoApps`, or Cmd-Shift-B → "Run on UNO Q". **Cmd-Shift-B only works when `~/ArduinoApps` is the folder open in VS Code** (the task uses `${workspaceFolder}/tools/deploy.py`). See that repo's CLAUDE.md for its workflow rules.
+
+## Board settings: one secrets file
+
+- The **only** board settings file is **`~/ArduinoApps/tools/board_secrets.py`** (git-ignored there): `HOSTS`, `USER`, `BOARD_NAME`, `BOARD_IP`.
+- `tools/advertise_board.py` in this repo reads `BOARD_NAME`/`BOARD_IP` from it by path; this repo has no `board_secrets.py` of its own (`tools/board_secrets_example.py` is documentation only). Don't create a second copy.
+- Switching home ↔ campus: change **`BOARD_IP`** there; nothing else. `HOSTS` already lists both: `["10.247.137.172" (Tufts_Robotics, unconfirmed), "192.168.1.185" (home), "AirFour.local"]`.
+
 ## UNO Q notes
 
-- Board apps live in `~/ArduinoApps` (clone of github.com/clabar01/ArduinoApps); deploy with `python3 tools/deploy.py <app>` from there (see that repo's CLAUDE.md).
-- App Python runs in a Docker container on its own network: `wlan0` is not visible and socket tricks return a 172.x address. The board's real IP is in the `HOST_IP` environment variable.
-- LED matrix pattern (from `minifig_tracker`): Python owns the logic and calls Bridge providers in the sketch (`show_dot(col,row)`, `clear_matrix()`); the sketch guards matrix writes with a `K_MUTEX`. Matrix is 13 cols × 8 rows.
-- `tools/advertise_board.py` (this repo) advertises the board over mDNS for App Lab; reads `tools/board_secrets.py` (git-ignored).
+- Board: AirFour, user `arduino`, home IP 192.168.1.185, Tufts IP likely 10.247.137.172.
+- App Python runs in a Docker container on its own network: `wlan0` is not visible and socket tricks return a 172.x address. App Lab sets `HOST_IP` at app start (fixed afterwards). For a live value, the board's crontab runs `show_ip/write_host_ip.sh` every minute, writing the wlan0 IP to `~/ArduinoApps/show_ip/host_ip.txt` (`/app/host_ip.txt` inside the show_ip container; empty = no WiFi).
+- LED matrix pattern (from `minifig_tracker`): Python owns the logic and calls Bridge providers in the sketch (`show_dot(col,row)`, `clear_matrix()`); the sketch guards matrix writes with a `K_MUTEX`. Matrix is 13 cols × 8 rows. For text, include `ArduinoGraphics.h` before `Arduino_LED_Matrix.h` and add `ArduinoGraphics (1.1.4)` to `sketch.yaml` (see `show_ip`).
+- Startup app: `arduino-app-cli properties set default /home/arduino/ArduinoApps/<app>` / `properties get default`. Currently **show_ip** (scrolls the IP; retries every 3 s showing "no IP" until one exists).
+- **Plan (Phase 7):** once `pong_display` exists it becomes the startup app instead of show_ip, and it should scroll the IP whenever no game messages are arriving (reuse show_ip's IP code and the `host_ip.txt` cron file — the cron line points at the show_ip folder, so update it or keep that folder).
+- `tools/advertise_board.py` (this repo) advertises the board over mDNS so App Lab can find it on Tufts WiFi.
 
 ## Status
 

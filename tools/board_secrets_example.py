@@ -1,10 +1,12 @@
-"""Template for tools/board_secrets.py. This file is safe to share.
+"""Reference only: this repo does NOT read a board_secrets.py of its own.
 
-advertise_board.py copies this to board_secrets.py (which Git ignores) on its
-first run; edit that copy with your board's values.
+The single settings file for the board is ~/ArduinoApps/tools/board_secrets.py
+(git-ignored there, created by running ArduinoApps' tools/deploy.py once).
+tools/advertise_board.py reads BOARD_NAME and BOARD_IP from it, so your IP is
+changed in one place only. It should contain at least:
 """
 
-# Board name and WiFi IP, used to advertise the board over mDNS so App Lab
-# can find it. Find the IP by running on the board:  hostname -I
-BOARD_NAME = "unoq"
-BOARD_IP = "192.168.1.50"
+HOSTS = ["10.247.137.172", "192.168.1.185", "AirFour.local"]  # used by deploy.py
+USER = "arduino"
+BOARD_NAME = "AirFour"
+BOARD_IP = "192.168.1.185"   # the only value to change between home and campus
