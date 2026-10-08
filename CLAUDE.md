@@ -81,5 +81,6 @@ Prefer adapting her existing code/patterns from these over writing new approache
 
 ## Status
 
-- [x] CLAUDE.md written (no game code yet)
-- [ ] Everything else — wait for Cecilia to say which step to start
+- [x] CLAUDE.md written
+- [x] Keyboard-only game: `laptop/game.py` (main loop) + `game_state.py` (rules, `is_hit`, state machine, no pygame) + `inputs.py` (paddle / swing / start sources) + `draw.py`. Run: `python laptop/game.py`. `GameState.update()` returns events (`hit`, `miss`, `record`, `serve`) for sounds/MQTT to hook into.
+- [ ] Next steps — wait for Cecilia to say which step to start
