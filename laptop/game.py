@@ -4,6 +4,9 @@ Run from the repo root:
     python laptop/game.py                   # keyboard paddle (default, always works)
     python laptop/game.py --input camera    # wrist tracking + AprilTags (one webcam)
     python laptop/game.py --tags            # keyboard paddle + AprilTags
+    add --no-publish to any of them: never publish the record (for testing)
+
+The record on MQTT is only published with --input camera (see mqtt_client.py).
 
 Wires the pieces together: input sources -> GameState (rules) -> Renderer.
 To add the IMU later, swap the swing source below; the rest of the loop stays
@@ -75,6 +78,8 @@ def main():
     parser.add_argument("--tags", action="store_true",
                         help="use AprilTags with the keyboard paddle "
                              "(always on with --input camera)")
+    parser.add_argument("--no-publish", action="store_true",
+                        help="never publish the record to the score topic (for testing)")
     args = parser.parse_args()
 
     pygame.init()
@@ -88,7 +93,11 @@ def main():
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x)
     swing_src = inputs.AlwaysSwing()       # IMU replaces this later
     # MQTT runs in its own background thread; the game never waits for it
-    mqtt = mqtt_client.GameMqtt() if config.MQTT_ENABLED else None
+    # Only real play may publish the record: the camera paddle (later: camera
+    # AND the IMU swing). Keyboard / --tags / --no-publish still load and show it.
+    publish_score = args.input == "camera" and not args.no_publish
+    why_not = "--no-publish" if args.no_publish else "keyboard paddle"
+    mqtt = mqtt_client.GameMqtt(publish_score, why_not) if config.MQTT_ENABLED else None
     key_src = inputs.KeyboardStart()       # Space / 0-2: always available as a fallback
 
     running = True
@@ -127,7 +136,7 @@ def main():
                 if tag_src is not None:
                     tag_src.draw_on_preview(view)
             renderer.draw(game, paddle_src, view, camera_error=getattr(camera, "error", None),
-                          mqtt_connected=None if mqtt is None else mqtt.connected)
+                          mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()))
             pygame.display.flip()
     finally:
         if camera is not None:

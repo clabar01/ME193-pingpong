@@ -21,6 +21,8 @@ import config  # noqa: E402
 def check(payload: bytes) -> str:
     """'ok' if the payload is a plain float like "12.0", else what's wrong."""
     text = payload.decode("utf-8", errors="replace")
+    if text == "":
+        return "cleared (empty message deletes the retained value)"
     try:
         value = float(text)
     except ValueError:

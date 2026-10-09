@@ -23,29 +23,31 @@ class Renderer:
         self.small_font = pygame.font.SysFont(None, 26)
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_connected=None):
+             mqtt_status=None):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
         camera_view: Surface with the camera picture and overlays, or None.
         camera_error: text if the camera failed, shown instead of the view.
-        mqtt_connected: True / False for the status line, None = MQTT off.
+        mqtt_status: (connected, detail text) for the status line, None = MQTT off.
         """
         tags_on = camera_view is not None or camera_error is not None
         self._draw_game(game, paddle_src, tags_on)
         self._draw_camera(camera_view)
         if paddle_src is not None:
             self._draw_paddle_messages(game, paddle_src, camera_error)
-        self._draw_mqtt(mqtt_connected)
+        self._draw_mqtt(mqtt_status)
 
-    def _draw_mqtt(self, connected):
-        """MQTT status, bottom left."""
-        if connected is None:
+    def _draw_mqtt(self, status):
+        """MQTT status and record, bottom left."""
+        if status is None:
             text, color = "MQTT: off", DIM_TEXT
-        elif connected:
-            text, color = "MQTT: connected", STATE_COLORS[gs.PLAYING]
         else:
-            text, color = "MQTT: disconnected (retrying)", STATE_COLORS[gs.MISS]
+            connected, detail = status
+            if connected:
+                text, color = f"MQTT: connected  |  {detail}", STATE_COLORS[gs.PLAYING]
+            else:
+                text, color = f"MQTT: disconnected (retrying)  |  {detail}", STATE_COLORS[gs.MISS]
         surf = self.small_font.render(text, True, color)
         self.screen.blit(surf, (20, self.screen.get_height() - surf.get_height() - 12))
 

@@ -15,6 +15,9 @@ MQTT_KEEPALIVE_S = 30                # broker notices a dead connection after ~1
 MQTT_RECONNECT_MIN_S = 1             # automatic reconnect: wait 1 s, doubling up to...
 MQTT_RECONNECT_MAX_S = 10            # ...10 s between attempts
 GAME_PUBLISH_HZ = 10                 # game state messages per second on GAME_TOPIC
+# At startup the record is read from SCORE_TOPIC's retained value; if none
+# arrives this long after subscribing, the topic counts as empty.
+RECORD_LOAD_WAIT_S = 2.0
 
 # Record of continuous hits: published as a FLOAT, retained, ONLY when the
 # record changes. Nothing else is ever published on this topic.
