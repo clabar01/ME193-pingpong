@@ -26,6 +26,7 @@ EVENT_HIT = "hit"
 EVENT_MISS = "miss"
 EVENT_RECORD = "record"   # best_streak just went up
 EVENT_SERVE = "serve"
+EVENT_BEST_RESET = "best_reset"   # best_streak was reset (AprilTag 5)
 
 
 @dataclass
@@ -103,6 +104,11 @@ class GameState:
         self.state = PLAYING
         self._serve()
         return [EVENT_SERVE]
+
+    def reset_best(self) -> list:
+        """Reset the record. Mid-rally, the record restarts from the current streak."""
+        self.best_streak = self.streak
+        return [EVENT_BEST_RESET]
 
     def set_paddle_x(self, x: float):
         """Move the paddle's center to x (clamped so it stays on screen)."""

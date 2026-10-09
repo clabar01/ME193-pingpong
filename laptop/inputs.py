@@ -3,9 +3,17 @@
 game.py only talks to these three small interfaces, so a camera or IMU source
 can replace a keyboard one later without changing the game logic:
 
-  paddle source:  update(dt); .x -> paddle center in screen pixels
+  paddle source:  update(dt); .x -> paddle center in screen pixels;
+                  .ready (may the game start?), .message (big on-screen text or
+                  None), .has_hand, handle_event(event),
+                  draw_on_preview(surface) (extras on the camera view), stop()
+                  (KeyboardPaddle here, pose_input.CameraPaddle for the camera)
   swing source:   swing_ok(now) -> bool, asked at the moment the ball reaches the paddle
-  start source:   handle_event(event); poll() -> level to start at, or None
+  control source: poll() -> list of (action, value):
+                    ("level", n)    show level n (only acted on while WAITING)
+                    ("start", n)    start the game (n = level, or None = current)
+                    ("reset", None) reset best_streak
+                  (KeyboardStart here, apriltag_input.TagStart for AprilTags)
 
 Keyboard sources always stay available as the fallback (no camera / no UNO Q).
 """
@@ -17,8 +25,22 @@ import config
 class KeyboardPaddle:
     """Left/Right arrow keys slide the paddle."""
 
+    kind = "keyboard"
+    ready = True      # nothing to calibrate
+    message = None
+    has_hand = True   # a keyboard never loses track of the paddle
+
     def __init__(self, start_x: float = config.WINDOW_WIDTH / 2):
         self.x = start_x
+
+    def handle_event(self, event):
+        pass
+
+    def draw_on_preview(self, surf):
+        pass
+
+    def stop(self):
+        pass
 
     def update(self, dt: float):
         keys = pygame.key.get_pressed()
@@ -42,29 +64,27 @@ class AlwaysSwing:
 
 
 class KeyboardStart:
-    """Space starts the game; number keys 0-2 pick the level while waiting.
+    """Space starts the game; number keys 0-2 pick the level.
 
-    Later an AprilTag source does the same job: tag seen -> start at that level.
+    The fallback for the AprilTag source (apriltag_input.TagStart), which
+    produces the same actions.
     """
 
     LEVEL_KEYS = {pygame.K_0: 0, pygame.K_1: 1, pygame.K_2: 2,
                   pygame.K_KP0: 0, pygame.K_KP1: 1, pygame.K_KP2: 2}
 
     def __init__(self):
-        self.level = config.DEFAULT_LEVEL
-        self._start_requested = False
+        self._actions = []
 
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
             return
         if event.key == pygame.K_SPACE:
-            self._start_requested = True
+            self._actions.append(("start", None))   # None = keep the current level
         elif event.key in self.LEVEL_KEYS and self.LEVEL_KEYS[event.key] in config.LEVELS:
-            self.level = self.LEVEL_KEYS[event.key]
+            self._actions.append(("level", self.LEVEL_KEYS[event.key]))
 
-    def poll(self):
-        """Level to start at if Space was pressed since the last poll, else None."""
-        if self._start_requested:
-            self._start_requested = False
-            return self.level
-        return None
+    def poll(self) -> list:
+        """Actions since the last poll."""
+        actions, self._actions = self._actions, []
+        return actions
