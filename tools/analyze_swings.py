@@ -101,7 +101,8 @@ def report(results, n_swings, n_fakes):
     r = results[winner]
     print(f"\nBetter signal: {winner.upper()} "
           f"(balanced accuracy {r['balanced_accuracy'] * 100:.1f}%, gap {r['gap']:.2f})")
-    print(f"Suggested: FEATURE = \"{winner}\", SWING_THRESHOLD = {r['threshold']:.3g}  ({r['unit']})")
+    print(f"Best single-signal threshold: {winner} >= {r['threshold']:.3g} {r['unit']}  "
+          f"(paddle_imu now combines both: MIN_ACCEL_PEAK_G and MIN_GYRO_PEAK_DPS in main.py)")
     return winner
 
 

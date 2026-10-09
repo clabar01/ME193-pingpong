@@ -1,0 +1,27 @@
+Gyro hand test, 2026-10-09 (campus, board AirFour), tools/imu_logger.py output.
+Detector at the time: candidate when |a| - 1 g > 2.0 g; peak accel within <= 60 ms;
+peak gyro from 100 ms before the start. All candidates were published (no gyro check yet).
+
+Labels (by Cecilia): #1-#10 real swings, #11-#15 fakes (sliding and reaching the
+paddle around). #16 (113 s later) is unlabeled and not used.
+
+Result: swings accel 2.56-5.79 g, gyro 540-934 dps; fakes accel 2.10-2.82 g,
+gyro 184-577 dps. Neither alone separates them; accel >= 2.2 g AND gyro >= 500 dps
+keeps all 10 swings and rejects all 5 fakes.
+
+14:17:49.297  SWING #1   peak  3.94 g   gyro   712 dps  first swing               (  173 ms board->laptop)
+14:17:50.762  SWING #2   peak  5.66 g   gyro   934 dps  + 1.322 s since previous  (  315 ms board->laptop)
+14:17:51.639  SWING #3   peak  2.85 g   gyro   817 dps  + 1.021 s since previous  (  171 ms board->laptop)
+14:17:52.613  SWING #4   peak  5.79 g   gyro   921 dps  + 0.971 s since previous  (  175 ms board->laptop)
+14:17:53.941  SWING #5   peak  2.56 g   gyro   686 dps  + 1.122 s since previous  (  381 ms board->laptop)
+14:17:54.784  SWING #6   peak  4.38 g   gyro   540 dps  + 1.050 s since previous  (  174 ms board->laptop)
+14:17:55.984  SWING #7   peak  2.75 g   gyro   726 dps  + 1.201 s since previous  (  172 ms board->laptop)
+14:17:57.078  SWING #8   peak  4.53 g   gyro   906 dps  + 1.092 s since previous  (  174 ms board->laptop)
+14:17:58.040  SWING #9   peak  4.59 g   gyro   781 dps  + 0.910 s since previous  (  226 ms board->laptop)
+14:17:58.929  SWING #10  peak  3.34 g   gyro   614 dps  + 0.952 s since previous  (  163 ms board->laptop)
+14:18:02.760  SWING #11  peak  2.37 g   gyro   477 dps  + 3.824 s since previous  (  171 ms board->laptop)
+14:18:05.099  SWING #12  peak  2.10 g   gyro   525 dps  + 2.323 s since previous  (  186 ms board->laptop)
+14:18:07.146  SWING #13  peak  2.14 g   gyro   577 dps  + 2.042 s since previous  (  192 ms board->laptop)
+14:18:08.888  SWING #14  peak  2.82 g   gyro   184 dps  + 1.762 s since previous  (  171 ms board->laptop)
+14:18:11.550  SWING #15  peak  2.18 g   gyro   357 dps  + 2.683 s since previous  (  151 ms board->laptop)
+14:20:04.503  SWING #16  peak  2.55 g   gyro   350 dps  +112.933 s since previous  (  170 ms board->laptop)

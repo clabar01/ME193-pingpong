@@ -23,6 +23,8 @@ Cecilia LaBarge's ME193 robotics midterm. A virtual ball moves on the laptop scr
 | `ME193/Rogers/CeciLaBarge` | laptop → broker | **Only** the record number of continuous hits, as a **float** (e.g. `12.0`), **retained**, published **every time the record changes**. Nothing else is ever published here — no debug, no state, no strings. |
 | `ME193/CeciLaBarge/imu` | UNO Q → laptop | Swing events from the accelerometer |
 | `ME193/CeciLaBarge/game` | laptop → UNO Q | Ball position + game state for the LED matrix dot |
+| `ME193/CeciLaBarge/imu/rejected` | UNO Q → laptop | Tuning only: moves that failed the swing checks (game ignores it) |
+| `ME193/CeciLaBarge/imu/raw` | UNO Q → laptop | Only with `DEBUG = True` on the board: raw samples for labeling |
 
 Broker address, topics, and credentials are configured in `config.py` / `board_secrets.py` — never hard-coded elsewhere.
 
@@ -76,9 +78,9 @@ Prefer adapting her existing code/patterns from these over writing new approache
 - App Python runs in a Docker container on its own network: `wlan0` is not visible and socket tricks return a 172.x address. App Lab sets `HOST_IP` at app start (fixed afterwards). For a live value, the board's crontab runs `show_ip/write_host_ip.sh` every minute, writing the wlan0 IP to `~/ArduinoApps/show_ip/host_ip.txt` (`/app/host_ip.txt` inside the show_ip container; empty = no WiFi).
 - LED matrix pattern (from `minifig_tracker`): Python owns the logic and calls Bridge providers in the sketch (`show_dot(col,row)`, `clear_matrix()`); the sketch guards matrix writes with a `K_MUTEX`. Matrix is 13 cols × 8 rows. For text, include `ArduinoGraphics.h` before `Arduino_LED_Matrix.h` and add `ArduinoGraphics (1.1.4)` to `sketch.yaml` (see `show_ip`).
 - **IMU (`~/ArduinoApps/paddle_imu`, step 1 done 2026-10-09):** MPU6050 (GY-521) on the header SDA/SCL = `Wire` (i2c2), address 0x68, WHO_AM_I 0x68 (genuine). UNO Q buses: `Wire`=i2c2 header, `Wire1`=i2c4 Qwiic, `Wire2`=i2c3 A4/A5. Read in the **sketch** (raw registers, no library) at 100 Hz, ±8 g, ±2000 °/s, DLPF 44 Hz; each sample goes to Python with `Bridge.notify("imu_sample", t_ms, ax, ay, az, gx, gy, gz)`; status/I2C scan via `Bridge.notify("imu_status", text)`. Python logs every 10th sample. At rest |a| ≈ 0.97 g, gyro bias ≈ 1–2 °/s. `arduino-app-cli app logs <app>` shows only the last 100 lines; use `--tail 100000` to see startup messages.
-- **Swing events (paddle_imu, deployed 2026-10-09):** detection in `paddle_imu/python/swing_detector.py` (pure Python, unit-tested on laptop): magnitude = |a| − 1 g; swing starts above `SWING_THRESHOLD` (**2.0 g**, see tuning below), event sent when it drops back below or 60 ms after the start (bounds latency), then 300 ms refractory after the swing ends. One MQTT message per swing to `ME193/CeciLaBarge/imu`, QoS 0: `{"swing": 1, "peak": <g>, "unit": "g", "peak_gyro": <deg/s>, "t": <swing start, Unix s from the board clock>}`. `peak_gyro` = fastest rotation from 100 ms before the start until the event; reported only, it does not affect detection. `DEBUG = False` (True: per-sample CSV on the board + raw stream to `ME193/CeciLaBarge/imu/raw`). Laptop: `python tools/imu_logger.py` prints peak g + peak dps + time since previous swing.
+- **Swing events (paddle_imu, deployed 2026-10-09):** detection in `paddle_imu/python/swing_detector.py` (pure Python, unit-tested on laptop): candidate when |a| − 1 g > 2.0 g; swing only if peak accel ≥ 2.2 g **and** peak gyro ≥ 500 °/s (gyro from 100 ms before the start); decided ≤ 60 ms after the start; 300 ms refractory after an accepted swing. See "Swing threshold tuning". One MQTT message per swing to `ME193/CeciLaBarge/imu`, QoS 0: `{"swing": 1, "peak": <g>, "unit": "g", "peak_gyro": <°/s>, "t": <swing start, Unix s, board clock>}`; rejected candidates (`"swing": 0` + `"failed"`) go to `ME193/CeciLaBarge/imu/rejected`. `DEBUG = False` (True: per-sample CSV on the board + raw stream to `.../imu/raw`). Laptop: `python tools/imu_logger.py` prints swings and rejected moves.
 - If `arduino-app-cli app logs` fails with `Error grabbing logs: invalid character`, Docker's log file for that app is corrupt (e.g. after a power loss): `arduino-app-cli app stop <app>; docker rm <app>-main-1; arduino-app-cli app start <app>` gives a fresh log.
-- **Signal options:** `swing_detector.py` can trigger on `FEATURE = "accel"` (|a| − 1 g, current) or `"gyro"` (|ω| °/s). Labeled-data tools exist but were skipped for now: `tools/record_swings.py` (needs DEBUG = True) and `tools/analyze_swings.py`.
+- Labeled-data tools (not used so far): `tools/record_swings.py` (needs DEBUG = True on the board) and `tools/analyze_swings.py` (compares one signal at a time).
 - **MQTT latency (for the Prompt 6 swing timing window):** broker.hivemq.com is AWS Frankfurt. Board→laptop delay of swing events measured with `imu_logger.py` on campus 2026-10-09: **110–485 ms** (test messages laptop→laptop ≈ 90–120 ms). Plus up to 60 ms from the detector's peak window. The game must match a swing that **arrives up to ~0.5 s after** the ball reaches the paddle line, so judge hits on arrival time with an asymmetric window (mostly after the contact moment), or use the event's `t` (board clock) if laptop and board clocks are synced; don't assume ~100 ms.
 - Startup app: `arduino-app-cli properties set default /home/arduino/ArduinoApps/<app>` / `properties get default`. Currently **show_ip** (scrolls the IP; retries every 3 s showing "no IP" until one exists).
 - **Plan (Phase 7):** once `pong_display` exists it becomes the startup app instead of show_ip, and it should scroll the IP whenever no game messages are arriving (reuse show_ip's IP code and the `host_ip.txt` cron file — the cron line points at the show_ip folder, so update it or keep that folder).
@@ -95,10 +97,35 @@ Prefer adapting her existing code/patterns from these over writing new approache
 
 ## Swing threshold tuning (2026-10-09, for the write-up)
 
-- **Data** (hand test with `tools/imu_logger.py`, detector at the 1.5 g placeholder): real swings peaked at **1.5–5.2 g** (|a| − 1 g), most between 2 and 4 g, about a quarter under 2.1 g. Fake moves (sliding, reaching, wiggling) peaked at **1.51, 1.62 and 2.11 g**. The ranges overlap, so no acceleration threshold separates them perfectly.
-- **Choice: `SWING_THRESHOLD = 2.0 g`, a compromise.** It rejects 2 of the 3 fakes (1.51, 1.62 g); only the 2.11 g wiggle still triggers. The cost is that the weakest swings don't register: those under 2.0 g, i.e. part of the ~quarter that peaked under 2.1 g; a deliberate return swing is usually harder than that. Raising it further (e.g. 2.2 g) would also drop the last fake but lose more real swings.
-- **Why occasional false triggers are acceptable:** a swing event alone never scores. The hit rule requires the paddle (wrist, from the camera) to be in the hit zone **and** a swing within the timing window around the moment the ball reaches the paddle. A fake trigger at any other time is ignored; it only matters if it happens inside that short window while the paddle is already in the right place, which is rare. Missed real swings are the costlier error, which is why the threshold isn't set higher.
-- **Next:** each event now also carries `peak_gyro`; a round of labeled swings vs fakes will show whether rotation speed separates them better than acceleration (detector can switch with `FEATURE = "gyro"`).
+**Round 1: acceleration only** (hand test with `tools/imu_logger.py`, detector at a 1.5 g placeholder). Real swings peaked at **1.5–5.2 g** (|a| − 1 g), most 2–4 g, about a quarter under 2.1 g. Fake moves (sliding, reaching, wiggling) peaked at **1.51, 1.62 and 2.11 g**. The ranges overlap, so no acceleration threshold separates them. Interim choice 2.0 g (rejected 2 of 3 fakes, cost: the weakest swings).
+
+**Round 2: acceleration + rotation (gyro)** — raw output in `data/gyro_test.txt`. Every move above 2.0 g was reported with its peak accel and peak gyro (gyro peak counted from 100 ms before the start); #1–10 real swings, #11–15 fakes (sliding/reaching).
+
+| # | label | peak accel (g) | peak gyro (°/s) | accel ≥ 2.2 | gyro ≥ 500 | result |
+|---|---|---|---|---|---|---|
+| 1 | swing | 3.94 | 712 | ✓ | ✓ | swing |
+| 2 | swing | 5.66 | 934 | ✓ | ✓ | swing |
+| 3 | swing | 2.85 | 817 | ✓ | ✓ | swing |
+| 4 | swing | 5.79 | 921 | ✓ | ✓ | swing |
+| 5 | swing | 2.56 | 686 | ✓ | ✓ | swing |
+| 6 | swing | 4.38 | 540 | ✓ | ✓ | swing |
+| 7 | swing | 2.75 | 726 | ✓ | ✓ | swing |
+| 8 | swing | 4.53 | 906 | ✓ | ✓ | swing |
+| 9 | swing | 4.59 | 781 | ✓ | ✓ | swing |
+| 10 | swing | 3.34 | 614 | ✓ | ✓ | swing |
+| 11 | fake | 2.37 | 477 | ✓ | ✗ | rejected |
+| 12 | fake | 2.10 | 525 | ✗ | ✓ | rejected |
+| 13 | fake | 2.14 | 577 | ✗ | ✓ | rejected |
+| 14 | fake | 2.82 | 184 | ✓ | ✗ | rejected |
+| 15 | fake | 2.18 | 357 | ✗ | ✗ | rejected |
+
+(#16, 2.55 g / 350 °/s, 2 min later, was not labeled; the rule rejects it.)
+
+- **Neither signal alone works:** swings 2.56–5.79 g vs fakes 2.10–2.82 g overlap in acceleration; swings 540–934 °/s vs fakes 184–577 °/s overlap in rotation.
+- **Both together do:** a swing must have peak accel ≥ **2.2 g** AND peak gyro ≥ **500 °/s**. All 10 swings pass both checks; **each fake fails at least one**: the hard-but-not-turning moves (#11, #14) fail the gyro check, the turning-but-gentle ones (#12, #13) fail the accel check, #15 fails both. Physically: a real stroke is both a hard acceleration and a fast wrist rotation; sliding or reaching the paddle around is usually only one of the two.
+- **Implementation** (`paddle_imu`, settings at the top of `main.py`): a candidate starts at 2.0 g (same as when the data was measured, so peaks are measured the same way), peaks are taken over ≤ 60 ms (gyro from 100 ms before), then both checks. 300 ms refractory only after an accepted swing. Rejected candidates go to `ME193/CeciLaBarge/imu/rejected` (tuning only; the game listens to `.../imu` alone).
+- **Caveat — small sample, tight margins:** only 15 labeled moves, one session, one person. Several fakes are rejected by a single check and only just: #13 by 0.06 g, #12 by 0.10 g, #11 by 23 °/s; the closest real swings clear the thresholds by 0.36 g (#5) and 40 °/s (#6). **Needs a retest on the real paddle** (sensor mounted as in play, real returns, more fakes) before calling it final; expect the thresholds to move.
+- **Why occasional false triggers are acceptable anyway:** a swing event alone never scores. The hit rule requires the paddle (wrist, from the camera) to be in the hit zone **and** a swing within the timing window around the moment the ball reaches the paddle. A fake trigger at any other time is ignored; it only matters inside that short window while the paddle is already in the right place, which is rare. Missed real swings are the costlier error.
 
 ## Record rules (ME193/Rogers/CeciLaBarge) — decided by Cecilia 2026-10-08
 
