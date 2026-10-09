@@ -4,9 +4,12 @@ Run from the repo root:
     python laptop/game.py                   # keyboard paddle (default, always works)
     python laptop/game.py --input camera    # wrist tracking + AprilTags (one webcam)
     python laptop/game.py --tags            # keyboard paddle + AprilTags
+    add --no-imu to ignore the paddle's swing sensor (every ball counts as swung)
     add --no-publish to any of them: never publish the record (for testing)
 
-The record on MQTT is only published with --input camera (see mqtt_client.py).
+Swings: the paddle IMU (over MQTT) in every mode; with the keyboard paddle,
+Space is also a swing. The record on MQTT is only published with
+--input camera AND the IMU active (see mqtt_client.py).
 
 Wires the pieces together: input sources -> GameState (rules) -> Renderer.
 To add the IMU later, swap the swing source below; the rest of the loop stays
@@ -56,6 +59,22 @@ def make_sources(args, start_x: float):
     return camera, paddle_src, tag_src
 
 
+def swing_display(swing_src, mqtt, now: float) -> dict:
+    """What the swing meter shows (see Renderer._draw_swing_meter)."""
+    info = {"mode": swing_src.kind, "peak": None, "peak_gyro": None, "delay_ms": None,
+            "age_s": None, "count": 0}
+    last = mqtt.last_swing_info if mqtt is not None and swing_src.kind != "always" else None
+    if last is not None:
+        info.update(peak=last["peak"], peak_gyro=last["peak_gyro"], delay_ms=last["delay_ms"],
+                    age_s=now - last["arrival"], count=last["count"])
+    if swing_src.kind.endswith("keyboard"):
+        key = swing_src.sources[-1].last_swing(now)
+        if key is not None and (info["age_s"] is None or now - key.arrival < info["age_s"]):
+            info.update(peak=None, peak_gyro=None, delay_ms=None, age_s=now - key.arrival,
+                        count=info["count"])
+    return info
+
+
 def apply_actions(game, actions, paddle_ready: bool) -> list:
     """Apply ("level" | "start" | "reset", value) actions from keyboard or tags."""
     events = []
@@ -78,6 +97,8 @@ def main():
     parser.add_argument("--tags", action="store_true",
                         help="use AprilTags with the keyboard paddle "
                              "(always on with --input camera)")
+    parser.add_argument("--no-imu", action="store_true",
+                        help="ignore the paddle IMU: every ball counts as swung")
     parser.add_argument("--no-publish", action="store_true",
                         help="never publish the record to the score topic (for testing)")
     args = parser.parse_args()
@@ -91,13 +112,23 @@ def main():
     renderer = draw.Renderer(screen)
 
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x)
-    swing_src = inputs.AlwaysSwing()       # IMU replaces this later
+    # IMU swings arrive over MQTT, so the IMU needs MQTT on.
+    imu_active = config.MQTT_ENABLED and not args.no_imu
+    # Only real play may publish the record: camera paddle AND IMU swings.
+    # Keyboard / --tags / --no-imu / --no-publish still load and show it.
+    publish_score = args.input == "camera" and imu_active and not args.no_publish
+    why_not = ("--no-publish" if args.no_publish else "--no-imu" if args.no_imu
+               else "keyboard paddle" if args.input != "camera" else "IMU off")
     # MQTT runs in its own background thread; the game never waits for it
-    # Only real play may publish the record: the camera paddle (later: camera
-    # AND the IMU swing). Keyboard / --tags / --no-publish still load and show it.
-    publish_score = args.input == "camera" and not args.no_publish
-    why_not = "--no-publish" if args.no_publish else "keyboard paddle"
     mqtt = mqtt_client.GameMqtt(publish_score, why_not) if config.MQTT_ENABLED else None
+
+    # Swing source (see the hit rule in game_state.py)
+    if not imu_active:
+        swing_src = inputs.AlwaysSwing()                      # every ball counts as swung
+    elif args.input == "camera":
+        swing_src = inputs.ImuSwing(mqtt)                     # real swings only
+    else:
+        swing_src = inputs.LatestSwing(inputs.ImuSwing(mqtt), inputs.KeyboardSwing())
     key_src = inputs.KeyboardStart()       # Space / 0-2: always available as a fallback
 
     running = True
@@ -112,6 +143,8 @@ def main():
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
                 key_src.handle_event(event)
+                if game.state == gs.PLAYING:
+                    swing_src.handle_event(event)    # Space = swing (keyboard paddle)
                 if game.state == gs.WAITING:
                     paddle_src.handle_event(event)   # e.g. C = recalibrate the camera
 
@@ -123,7 +156,7 @@ def main():
 
             paddle_src.update(dt)
             game.set_paddle_x(paddle_src.x)
-            events += game.update(dt, swing_ok=swing_src.swing_ok(now))
+            events += game.update(dt, now, swing_src.last_swing(now))
             if events:   # for sounds later
                 print(f"streak={game.streak} best={game.best_streak} events={events}")
             if mqtt is not None:
@@ -136,7 +169,8 @@ def main():
                 if tag_src is not None:
                     tag_src.draw_on_preview(view)
             renderer.draw(game, paddle_src, view, camera_error=getattr(camera, "error", None),
-                          mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()))
+                          mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()),
+                          swing_info=swing_display(swing_src, mqtt, now))
             pygame.display.flip()
     finally:
         if camera is not None:

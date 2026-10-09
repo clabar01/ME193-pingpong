@@ -8,7 +8,9 @@ can replace a keyboard one later without changing the game logic:
                   None), .has_hand, handle_event(event),
                   draw_on_preview(surface) (extras on the camera view), stop()
                   (KeyboardPaddle here, pose_input.CameraPaddle for the camera)
-  swing source:   swing_ok(now) -> bool, asked at the moment the ball reaches the paddle
+  swing source:   last_swing(now) -> latest game_state.Swing (arrival time, peak) or
+                  None; handle_event(event). The hit rule (game_state.is_hit)
+                  decides whether it falls in the timing window.
   control source: poll() -> list of (action, value):
                     ("level", n)    show level n (only acted on while WAITING)
                     ("start", n)    start the game (n = level, or None = current)
@@ -17,9 +19,12 @@ can replace a keyboard one later without changing the game logic:
 
 Keyboard sources always stay available as the fallback (no camera / no UNO Q).
 """
+import time
+
 import pygame
 
 import config
+from game_state import Swing
 
 
 class KeyboardPaddle:
@@ -53,14 +58,64 @@ class KeyboardPaddle:
 
 
 class AlwaysSwing:
-    """Placeholder swing source: every hit attempt counts as swung.
+    """--no-imu: every ball counts as swung (the swing "arrives" at contact)."""
 
-    Later replaced by an IMU source that answers True only if a swing event
-    from the UNO Q arrived within the timing window around `now`.
-    """
+    kind = "always"
 
-    def swing_ok(self, now: float) -> bool:
-        return True
+    def handle_event(self, event):
+        pass
+
+    def last_swing(self, now: float) -> Swing:
+        return Swing(arrival=now)
+
+
+class KeyboardSwing:
+    """Space = swing, for the keyboard paddle (the keyboard fallback must stay playable)."""
+
+    kind = "keyboard"
+
+    def __init__(self):
+        self._last = None
+
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            self._last = Swing(arrival=time.monotonic())
+
+    def last_swing(self, now: float):
+        return self._last
+
+
+class ImuSwing:
+    """Swings from the paddle's IMU (UNO Q paddle_imu), received over MQTT by
+    mqtt_client.GameMqtt, which stores the latest one with its arrival time."""
+
+    kind = "imu"
+
+    def __init__(self, mqtt):
+        self.mqtt = mqtt
+
+    def handle_event(self, event):
+        pass
+
+    def last_swing(self, now: float):
+        return self.mqtt.last_swing
+
+
+class LatestSwing:
+    """Combines swing sources: the most recent swing from any of them."""
+
+    def __init__(self, *sources):
+        self.sources = sources
+        self.kind = "+".join(s.kind for s in sources)
+
+    def handle_event(self, event):
+        for s in self.sources:
+            s.handle_event(event)
+
+    def last_swing(self, now: float):
+        swings = [s.last_swing(now) for s in self.sources]
+        swings = [s for s in swings if s is not None]
+        return max(swings, key=lambda s: s.arrival) if swings else None
 
 
 class KeyboardStart:

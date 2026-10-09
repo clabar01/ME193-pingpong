@@ -27,8 +27,8 @@ THE RECORD RULES
      (goes down). A tag-5 reset made before the record loaded wins over the
      loaded value.
   3. Only real play publishes. publish_score is True only with
-     --input camera (later: camera AND the IMU), and False with the keyboard,
-     --tags, or --no-publish. With it False the game still connects, loads,
+     --input camera AND the IMU active (no --no-imu), and False with the
+     keyboard, --tags, --no-imu, or --no-publish. With it False the game still connects, loads,
      and shows the record, but never publishes on SCORE_TOPIC.
 
 Networking runs in paho's own background thread (loop_start), which also
@@ -43,6 +43,7 @@ import paho.mqtt.client as mqtt
 
 import config
 import game_state as gs
+from game_state import Swing
 
 
 class GameMqtt:
@@ -66,6 +67,11 @@ class GameMqtt:
         self._subscribed_at = None   # time.monotonic() of the first SUBACK
         self._retained = None        # retained record from the broker (float), if any
         self._retained_seen = False
+        # Latest swing from the paddle IMU (IMU_TOPIC). Replaced as a whole on
+        # each event (one assignment, no lock), read by the game thread.
+        self.last_swing = None       # game_state.Swing: arrival (monotonic) + peak (g)
+        self.last_swing_info = None  # dict: peak, peak_gyro, delay_ms, count, wall time
+        self.swing_count = 0
 
         # Touched ONLY by the game thread (see update())
         self.record_loaded = False
@@ -171,6 +177,7 @@ class GameMqtt:
         if not reason_code.is_failure:
             self._connections += 1
             client.subscribe(self.score_topic, qos=1)   # to read the retained record
+            client.subscribe(config.IMU_TOPIC)            # swing events from the paddle
         self.connected = not reason_code.is_failure
         print(f"MQTT: connect to {self.broker}:{self.port}: {reason_code}")
 
@@ -179,6 +186,9 @@ class GameMqtt:
             self._subscribed_at = time.monotonic()
 
     def _on_message(self, client, userdata, msg):
+        if msg.topic == config.IMU_TOPIC:
+            self._on_swing(msg)
+            return
         # Only the first retained message matters (the record at startup).
         # Later ones are our own publishes coming back, or a re-sent retained
         # value after a reconnect: the game is the source of truth by then.
@@ -193,6 +203,28 @@ class GameMqtt:
             print(f"MQTT: ignoring unexpected retained value on {msg.topic}: {msg.payload!r}")
             self._retained = None   # treat as empty; the next record overwrites it
         self._retained_seen = True
+
+    def _on_swing(self, msg):
+        """A swing event from paddle_imu: {"swing": 1, "peak": g, "peak_gyro": dps, "t": board time}."""
+        arrival = time.monotonic()
+        wall = time.time()
+        try:
+            event = json.loads(msg.payload)
+            if event.get("swing") != 1:
+                return
+            peak = float(event["peak"])
+        except (ValueError, KeyError, TypeError):
+            print(f"MQTT: ignoring unexpected message on {msg.topic}: {msg.payload[:100]!r}")
+            return
+        delay_ms = None
+        try:
+            delay_ms = (wall - float(event["t"])) * 1000   # board clock -> laptop clock
+        except (KeyError, TypeError, ValueError):
+            pass
+        self.swing_count += 1
+        self.last_swing_info = {"peak": peak, "peak_gyro": event.get("peak_gyro"),
+                                "delay_ms": delay_ms, "count": self.swing_count, "arrival": arrival}
+        self.last_swing = Swing(arrival=arrival, peak=peak)   # last: the game acts on this
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         if self.connected and not self._stopping:

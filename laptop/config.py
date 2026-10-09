@@ -99,5 +99,33 @@ TAG_HOLD_S = 1.0
 # "continuously seen".
 TAG_DROPOUT_S = 0.25
 
+# ---------------------------------------------------------------- Swing timing (is_hit)
+# Swing events from the paddle IMU arrive late: measured board -> laptop delay
+# 110-485 ms, plus up to 60 ms of detection. So a swing is matched by its
+# ARRIVAL time on the laptop, with a window that reaches mostly AFTER the
+# moment the ball reaches the paddle line ("contact"):
+#     contact - SWING_WINDOW_BEFORE_S  <=  swing arrival  <=  contact + SWING_WINDOW_AFTER_S
+SWING_WINDOW_BEFORE_S = 0.15   # a swing may arrive this much before contact
+SWING_WINDOW_AFTER_S = 0.55    # ...or this much after (covers the 485 ms worst case + detection)
+# While waiting for a late swing, the ball presses into the paddle: it keeps
+# its direction but slows down with this time constant (s), so it sinks only
+# a few pixels past the line before stopping.
+HOLD_DECAY_S = 0.04
+
+# ---------------------------------------------------------------- Return speed (harder swing = faster)
+# After a hit the ball goes back at the level's ball_speed times a factor set
+# by the swing's peak acceleration: RETURN_FACTOR_MIN at or below
+# RETURN_PEAK_LOW_G, RETURN_FACTOR_MAX at or above RETURN_PEAK_HIGH_G, linear
+# in between. Only the trip back: the ball returns to the level's speed when
+# it bounces off the far wall. Hits without a measured peak use 1.0.
+RETURN_PEAK_LOW_G = 2.2        # = the IMU's MIN_ACCEL_PEAK_G: the softest swing that counts
+RETURN_PEAK_HIGH_G = 5.5       # about the hardest swings in the hand tests
+RETURN_FACTOR_MIN = 0.8
+RETURN_FACTOR_MAX = 1.6
+
+# ---------------------------------------------------------------- Swing meter (draw.py)
+SWING_METER_MAX_G = 6.0        # top of the meter
+SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
+
 # ---------------------------------------------------------------- States
 MISS_PAUSE_S = 1.0          # pause in MISS before the next serve

@@ -23,13 +23,14 @@ class Renderer:
         self.small_font = pygame.font.SysFont(None, 26)
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_status=None):
+             mqtt_status=None, swing_info=None):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
         camera_view: Surface with the camera picture and overlays, or None.
         camera_error: text if the camera failed, shown instead of the view.
         mqtt_status: (connected, detail text) for the status line, None = MQTT off.
+        swing_info: dict for the swing meter (game.swing_display), or None.
         """
         tags_on = camera_view is not None or camera_error is not None
         self._draw_game(game, paddle_src, tags_on)
@@ -37,6 +38,54 @@ class Renderer:
         if paddle_src is not None:
             self._draw_paddle_messages(game, paddle_src, camera_error)
         self._draw_mqtt(mqtt_status)
+        if swing_info is not None:
+            self._draw_swing_meter(game, swing_info)
+
+    def _draw_swing_meter(self, game: gs.GameState, info: dict):
+        """Bottom right: last swing's peak (bar), flashing on each new swing, plus
+        its delay and the last hit's timing."""
+        w, h = self.screen.get_size()
+        bar = pygame.Rect(w - 52, h - 210, 22, 170)
+        pygame.draw.rect(self.screen, (40, 46, 62), bar, border_radius=4)
+        age = info["age_s"]
+        flash = age is not None and age < config.SWING_METER_FLASH_S
+        if info["peak"] is not None:
+            frac = min(1.0, max(0.0, info["peak"] / config.SWING_METER_MAX_G))
+            fill = pygame.Rect(bar.x, bar.bottom - int(bar.height * frac), bar.width,
+                               int(bar.height * frac))
+            pygame.draw.rect(self.screen, PADDLE, fill, border_radius=4)
+        elif flash:   # Space swing: no measured peak, flash the whole bar
+            pygame.draw.rect(self.screen, PADDLE, bar, border_radius=4)
+        if flash:
+            glow = pygame.Surface(bar.inflate(12, 12).size, pygame.SRCALPHA)
+            alpha = int(200 * (1 - age / config.SWING_METER_FLASH_S))
+            pygame.draw.rect(glow, (255, 230, 120, alpha), glow.get_rect(), 4, border_radius=8)
+            self.screen.blit(glow, bar.inflate(12, 12).topleft)
+        # Minimum swing line (the IMU's accel check)
+        y_min = bar.bottom - int(bar.height * config.RETURN_PEAK_LOW_G / config.SWING_METER_MAX_G)
+        pygame.draw.line(self.screen, TEXT, (bar.x - 4, y_min), (bar.right + 4, y_min), 1)
+
+        modes = {"imu": "IMU swings", "imu+keyboard": "IMU or Space = swing",
+                 "always": "--no-imu: every ball swung"}
+        lines = [(modes.get(info["mode"], info["mode"]), DIM_TEXT)]
+        if info["peak"] is not None:
+            gyro = f"  {info['peak_gyro']:.0f} dps" if info["peak_gyro"] is not None else ""
+            lines.append((f"swing #{info['count']}: {info['peak']:.2f} g{gyro}",
+                          CALIBRATE if flash else TEXT))
+            if info["delay_ms"] is not None and -2000 < info["delay_ms"] < 10000:
+                lines.append((f"delay {info['delay_ms']:.0f} ms (board -> laptop)", TEXT))
+        elif age is not None:
+            lines.append(("swing (Space)", CALIBRATE if flash else TEXT))
+        elif info["mode"] != "always":
+            lines.append(("no swing yet", DIM_TEXT))
+        if game.last_swing_offset is not None:
+            lines.append((f"last hit: swing {game.last_swing_offset * 1000:+.0f} ms vs contact, "
+                          f"return x{game.last_return_factor:.2f}", DIM_TEXT))
+        y = bar.bottom - len(lines) * 24 + 4
+        for text, color in lines:
+            surf = self.small_font.render(text, True, color)
+            self.screen.blit(surf, (bar.x - 16 - surf.get_width(), y))
+            y += 24
 
     def _draw_mqtt(self, status):
         """MQTT status and record, bottom left."""
@@ -65,6 +114,11 @@ class Renderer:
         if game.state != gs.WAITING:
             b = game.ball
             pygame.draw.circle(s, BALL, (round(b.x), round(b.y)), round(b.radius))
+            if game.holding:
+                # Waiting for a late swing: a ring closes in on the ball as the
+                # timing window runs out.
+                r = b.radius + (1 - game.hold_progress) * b.radius * 2.5
+                pygame.draw.circle(s, CALIBRATE, (round(b.x), round(b.y)), round(r), 2)
 
         self._draw_hud(game)
         if game.state == gs.WAITING:
