@@ -230,7 +230,7 @@ class Renderer:
         z = config.MY_HIT_Z
         self._draw_paddle_shape(p.x, p.y, z, PADDLE, 50)   # very see-through: never hide the ball
         # Hit zone for this level: the ball's center must be inside this ring at contact
-        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + game.params["hit_tolerance"]
+        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + game.hit_tolerance
         pygame.draw.circle(self.screen, HIT_RING, P(p.x, p.y, z), view3d.size(reach, z), 1)
 
     def _draw_hud(self, game: gs.GameState):

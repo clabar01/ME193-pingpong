@@ -40,17 +40,19 @@ MAX_DT = 1 / 20     # cap one frame's time step (s) so a hiccup can't teleport t
 #   ball_speed:    m/s along the table for the opponent's shots (serve/returns)
 #   hit_tolerance: m of slack around "paddle touches ball" (bigger = easier):
 #                  a hit needs ball-to-paddle distance <= paddle radius + ball
-#                  radius + this
+#                  radius + this. Used with the keyboard paddle.
+#   hit_tolerance_camera: the same for the camera paddle, about double: wrist
+#                  tracking is noisier and laggier than arrow keys.
 #   opponent:      the AI (see OPPONENT below): reaction delay (s) before it
 #                  starts moving, max speed (m/s) across the table, aim error
 #                  (m, random offset in where it thinks the ball will come)
 #                  Miss rates in the comments: simulated over 400 of my returns.
 LEVELS = {
-    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": 0.08,
+    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": 0.08, "hit_tolerance_camera": 0.16,
         "opponent": {"reaction_s": 0.28, "max_speed": 1.4, "aim_error_m": 0.10}},   # misses ~20%
-    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": 0.05,
+    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": 0.05, "hit_tolerance_camera": 0.10,
         "opponent": {"reaction_s": 0.22, "max_speed": 1.8, "aim_error_m": 0.07}},   # misses ~9%
-    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": 0.025,
+    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": 0.025, "hit_tolerance_camera": 0.05,
         "opponent": {"reaction_s": 0.16, "max_speed": 2.2, "aim_error_m": 0.06}},   # misses ~3%
 }
 DEFAULT_LEVEL = 0   # used when starting from the keyboard (no tag)
@@ -147,7 +149,12 @@ TAG_DROPOUT_S = 0.25
 # moment the ball reaches the paddle line ("contact"):
 #     contact - SWING_WINDOW_BEFORE_S  <=  swing arrival  <=  contact + SWING_WINDOW_AFTER_S
 SWING_WINDOW_BEFORE_S = 0.15   # a swing may arrive this much before contact
-SWING_WINDOW_AFTER_S = 0.55    # ...or this much after (covers the 485 ms worst case + detection)
+SWING_WINDOW_AFTER_S = 0.60    # ...or this much after (485 ms worst delay + detection; a test
+                               # swing sent 400 ms late arrived at 548 ms, so 0.55 was too tight)
+# The paddle counts as on the ball if it was there at ANY moment from this
+# long before contact up to contact: swinging moves the tracked wrist right
+# at contact, so the position just before the swing is the one that counts.
+PADDLE_LOOKBACK_S = 0.20
 # While waiting for a late swing, the ball presses into the paddle: it keeps
 # its direction but slows down with this time constant (s)...
 HOLD_DECAY_S = 0.04

@@ -109,6 +109,7 @@ def main():
     clock = pygame.time.Clock()
 
     game = gs.GameState()
+    game.camera_mode = args.input == "camera"   # wider hit tolerance for wrist tracking
     renderer = draw.Renderer(screen)
 
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)

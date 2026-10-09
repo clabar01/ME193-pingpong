@@ -17,6 +17,7 @@ opponent's side -> the opponent (a simple AI) returns it or misses.
 """
 import math
 import random
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -75,13 +76,19 @@ class Swing:
 #      wall just behind my end of the table where my paddle moves. "Contact"
 #      is the moment the ball crosses that plane. Nothing is judged before.
 #
-#   2. The paddle is in the right place AT CONTACT. The camera tracks the
-#      player's wrist, which moves the paddle left/right and up/down in the
-#      hitting plane. At the moment of contact the paddle must overlap the
-#      ball: the distance between the ball's center and the paddle's center
-#      must be at most paddle radius + ball radius + a tolerance that depends
-#      on the level (generous on Beginner, tight on Pro). If not, it's a miss
-#      right away. Moving the paddle afterwards doesn't help.
+#   2. The paddle was in the right place, just before or at contact. The
+#      camera tracks the player's wrist, which moves the paddle left/right and
+#      up/down in the hitting plane. The paddle must overlap the spot where
+#      the ball crosses the hitting plane: the distance between that spot and
+#      the paddle's center must be at most paddle radius + ball radius + a
+#      tolerance that depends on the level (generous on Beginner, tight on
+#      Pro; about double with the camera paddle, because wrist tracking is
+#      noisier than arrow keys). It is enough for this to be true at ANY
+#      moment from PADDLE_LOOKBACK_S (0.2 s) before contact up to contact:
+#      swinging the real paddle moves the tracked wrist right at contact, so
+#      the position the player held just before the swing must count. If the
+#      paddle was never there in that time, it's a miss right away. Moving the
+#      paddle there after contact doesn't help.
 #
 #   3. The player really swung, at the right time. The accelerometer and
 #      gyroscope on the real paddle send a "swing" message (the UNO Q only
@@ -90,7 +97,7 @@ class Swing:
 #      late: we measured 110 to 485 ms. So the swing is judged by when it
 #      ARRIVES, and the timing window is lopsided: a swing may arrive up to
 #      SWING_WINDOW_BEFORE_S (0.15 s) before contact, or up to
-#      SWING_WINDOW_AFTER_S (0.55 s) after it. Each swing can only be used
+#      SWING_WINDOW_AFTER_S (0.6 s) after it. Each swing can only be used
 #      for one hit.
 #
 # Because a swing can arrive after contact, the decision may have to wait.
@@ -100,21 +107,23 @@ class Swing:
 #     net, faster and deeper the harder the swing was;
 #   - the window closes with no swing    -> MISS: the ball drops past me.
 #
-# Why this is fair: a swing alone never scores (the paddle must be on the
-# ball at contact), and the paddle alone never scores (there must be a real
-# swing close to contact). An occasional false swing from the sensor only
+# Why this is fair: a swing alone never scores (the paddle must have been on
+# the ball's path at contact time), and the paddle alone never scores (there
+# must be a real swing close to contact). An occasional false swing from the sensor only
 # matters if it lands in that short window while the paddle is already on
 # the ball.
 #
 # With the keyboard (Space = swing) or --no-imu (every ball counts as swung),
 # the swing arrives instantly, so check 3 is decided at contact.
 # =============================================================================
-def is_hit(ball: Ball, paddle: Paddle, tolerance: float, contact_time: Optional[float],
+def is_hit(ball: Ball, paddles: list, tolerance: float, contact_time: Optional[float],
            swing: Optional[Swing], now: float) -> Optional[bool]:
     """Apply the hit rule above.
 
-    ball, paddle: where they were AT CONTACT (contact_time).
-    tolerance: the level's hit_tolerance (m).
+    ball: where it crossed my hitting plane (at contact_time).
+    paddles: the paddle's positions from PADDLE_LOOKBACK_S before contact up
+             to contact (one per frame).
+    tolerance: the level's hit tolerance (m) for this paddle input.
     swing: the latest unused swing, or None.
     Returns True (hit), False (miss), or None (not decided yet: keep waiting).
     """
@@ -122,9 +131,9 @@ def is_hit(ball: Ball, paddle: Paddle, tolerance: float, contact_time: Optional[
     if contact_time is None:
         return None
 
-    # 2. Paddle on the ball at contact (distance in the hitting plane).
+    # 2. Paddle on the ball's crossing spot at some moment in the look-back.
     reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + tolerance
-    if math.hypot(ball.x - paddle.x, ball.y - paddle.y) > reach:
+    if not any(math.hypot(ball.x - p.x, ball.y - p.y) <= reach for p in paddles):
         return False
 
     # 3. A swing that arrived inside the timing window around contact.
@@ -238,6 +247,8 @@ class GameState:
         self.ball = Ball(0.0, config.SERVE_HEIGHT, config.OPP_HIT_Z)
         self.opponent = Opponent()
         self.game_time = 0.0     # seconds of play (drives the opponent)
+        self.camera_mode = False   # camera paddle: use the level's hit_tolerance_camera
+        self._paddle_history = deque()   # (time, Paddle) for the hit rule's look-back
 
         # Rally bookkeeping
         self.coming_to_me = True      # ball heading my way (else to the opponent)
@@ -249,7 +260,7 @@ class GameState:
         self.holding = False
         self.contact_time = None
         self._contact_ball = None
-        self._contact_paddle = None
+        self._contact_paddles = []
         self._held_velocity = (0.0, 0.0, 0.0)
         self._used_swing = None
         self._now = None
@@ -261,6 +272,11 @@ class GameState:
     @property
     def params(self) -> dict:
         return config.LEVELS[self.level]
+
+    @property
+    def hit_tolerance(self) -> float:
+        key = "hit_tolerance_camera" if self.camera_mode else "hit_tolerance"
+        return self.params[key]
 
     @property
     def hold_progress(self) -> float:
@@ -311,6 +327,10 @@ class GameState:
         events = []
         if swing is not None and swing.arrival == self._used_swing:
             swing = None   # already used for a hit: each swing counts once
+        # Remember where the paddle was (for the hit rule's look-back)
+        self._paddle_history.append((now, Paddle(self.paddle.x, self.paddle.y)))
+        while self._paddle_history and self._paddle_history[0][0] < now - config.PADDLE_LOOKBACK_S - 0.05:
+            self._paddle_history.popleft()
 
         if self.state in (MISS, POINT):
             if not self.holding:
@@ -360,7 +380,7 @@ class GameState:
         if not self.holding:
             return events
 
-        verdict = is_hit(self._contact_ball, self._contact_paddle, self.params["hit_tolerance"],
+        verdict = is_hit(self._contact_ball, self._contact_paddles, self.hit_tolerance,
                          self.contact_time, swing, now)
         if verdict is None:
             return events                     # keep waiting for a late swing
@@ -387,7 +407,9 @@ class GameState:
         self.contact_time = self._contact_time_used = now
         b = self.ball
         self._contact_ball = Ball(b.x, b.y, b.z, b.vx, b.vy, b.vz)
-        self._contact_paddle = Paddle(self.paddle.x, self.paddle.y)
+        # Paddle positions from PADDLE_LOOKBACK_S before contact up to now (contact)
+        self._contact_paddles = [p for t, p in self._paddle_history
+                                 if t >= now - config.PADDLE_LOOKBACK_S]
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
