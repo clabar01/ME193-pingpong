@@ -10,9 +10,10 @@ Two topics:
       retained. Nothing else is ever published on this topic.
   GAME_TOPIC   (ME193/CeciLaBarge/game)
       About GAME_PUBLISH_HZ times a second, JSON for the UNO Q LED matrix:
-      {"state": "PLAYING", "level": 1, "streak": 3, "x": 0.512, "y": 0.233}
-      x, y = ball center, 0..1 (x: 0 = left wall; y: 0 = far wall, 1 = bottom
-      of the screen, the player's side). Not retained. Sent in every mode.
+      {"state": "PLAYING", "level": 1, "streak": 3, "x": 0.512, "y": 0.233, "h": 0.31}
+      x, y = ball position seen from above the table, 0..1 (x: 0 = left edge,
+      1 = right; y: 0 = the opponent's end, 1 = my end); h = height above the
+      table in meters. Not retained. Sent in every mode.
 
 THE RECORD RULES
   1. Load first. On connecting, the game subscribes to SCORE_TOPIC and reads
@@ -122,12 +123,14 @@ class GameMqtt:
     def publish_game(self, game: gs.GameState):
         if not self.connected:
             return   # nothing to do offline; the next message replaces this one anyway
+        bx, by = game.ball_normalized()
         msg = {
             "state": game.state,
             "level": game.level,
             "streak": game.streak,
-            "x": round(game.ball.x / game.width, 3),
-            "y": round(game.ball.y / game.height, 3),
+            "x": round(bx, 3),   # top view of the table: 0 = left, 1 = right
+            "y": round(by, 3),   # 0 = opponent's end, 1 = my end
+            "h": round(max(game.ball.y, 0.0), 3),   # ball height above the table (m)
         }
         self.client.publish(self.game_topic, json.dumps(msg), qos=0, retain=False)
 

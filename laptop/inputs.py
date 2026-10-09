@@ -3,7 +3,7 @@
 game.py only talks to these three small interfaces, so a camera or IMU source
 can replace a keyboard one later without changing the game logic:
 
-  paddle source:  update(dt); .x -> paddle center in screen pixels;
+  paddle source:  update(dt); .x, .y -> paddle center in the hitting plane (m);
                   .ready (may the game start?), .message (big on-screen text or
                   None), .has_hand, handle_event(event),
                   draw_on_preview(surface) (extras on the camera view), stop()
@@ -28,15 +28,16 @@ from game_state import Swing
 
 
 class KeyboardPaddle:
-    """Left/Right arrow keys slide the paddle."""
+    """Arrow keys move the paddle in the hitting plane: left/right and up/down."""
 
     kind = "keyboard"
     ready = True      # nothing to calibrate
     message = None
     has_hand = True   # a keyboard never loses track of the paddle
 
-    def __init__(self, start_x: float = config.WINDOW_WIDTH / 2):
-        self.x = start_x
+    def __init__(self, start_x: float = 0.0, start_y: float = 0.3):
+        self.x = start_x   # meters across the table
+        self.y = start_y   # meters above the table
 
     def handle_event(self, event):
         pass
@@ -49,12 +50,12 @@ class KeyboardPaddle:
 
     def update(self, dt: float):
         keys = pygame.key.get_pressed()
-        direction = keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]
-        self.x += direction * config.PADDLE_KEY_SPEED * dt
+        self.x += (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]) * config.PADDLE_KEY_SPEED * dt
+        self.y += (keys[pygame.K_UP] - keys[pygame.K_DOWN]) * config.PADDLE_KEY_SPEED * dt
         # Same limits as GameState, so the paddle responds at once after
-        # being held against a wall.
-        half = config.PADDLE_WIDTH / 2
-        self.x = min(max(self.x, half), config.WINDOW_WIDTH - half)
+        # being held against an edge.
+        self.x = min(max(self.x, -config.PADDLE_X_RANGE_M), config.PADDLE_X_RANGE_M)
+        self.y = min(max(self.y, config.PADDLE_Y_MIN_M), config.PADDLE_Y_MAX_M)
 
 
 class AlwaysSwing:

@@ -110,17 +110,19 @@ class CameraPaddle:
     Calibration: at startup it asks you to reach to your left edge, then your
     right edge. Each edge is a countdown; the wrist x is averaged over the last
     CALIB_SAMPLE_S seconds of it. Those two numbers become the ends of the
-    table: wrist at your left edge -> paddle at the left wall, right edge ->
-    right wall, linear in between.
+    paddle's range: wrist at your left edge -> paddle far left, right edge ->
+    far right, linear in between. Up/down needs no calibration: the wrist's
+    height in the image maps to the paddle's height (WRIST_Y_HIGH/LOW).
     """
 
     kind = "camera"
 
     def __init__(self, pose: PoseProcessor, camera=None,
-                 start_x: float = config.WINDOW_WIDTH / 2):
+                 start_x: float = 0.0, start_y: float = 0.3):
         self.pose = pose
         self.camera = camera   # only used to report camera errors
-        self.x = start_x
+        self.x = start_x   # paddle position in the hitting plane (m)
+        self.y = start_y
         self.has_hand = False
         self.left_x: Optional[float] = None    # calibrated wrist x at your left edge (0..1)
         self.right_x: Optional[float] = None   # ... and right edge
@@ -170,15 +172,19 @@ class CameraPaddle:
         if not self.has_hand:
             return   # no hand: freeze the paddle where it is
 
-        # Map the wrist between the calibrated edges (0..1) onto the table.
+        # Map the wrist between the calibrated edges (0..1) across the paddle's range.
         t = (r.wrist_x - self.left_x) / (self.right_x - self.left_x)
         t = min(max(t, 0.0), 1.0)
-        half = config.PADDLE_WIDTH / 2
-        target = half + t * (config.WINDOW_WIDTH - 2 * half)
+        target_x = -config.PADDLE_X_RANGE_M + t * 2 * config.PADDLE_X_RANGE_M
+        # Wrist height in the image -> paddle height (higher wrist = higher paddle).
+        u = (r.wrist_y - config.WRIST_Y_HIGH) / (config.WRIST_Y_LOW - config.WRIST_Y_HIGH)
+        u = min(max(u, 0.0), 1.0)
+        target_y = config.PADDLE_Y_MAX_M + u * (config.PADDLE_Y_MIN_M - config.PADDLE_Y_MAX_M)
 
         # Exponential moving average: move a fraction of the way to the target
         # each frame, which smooths out MediaPipe's frame-to-frame jitter.
-        self.x += config.SMOOTHING_ALPHA * (target - self.x)
+        self.x += config.SMOOTHING_ALPHA * (target_x - self.x)
+        self.y += config.SMOOTHING_ALPHA * (target_y - self.y)
 
     def draw_on_preview(self, surf: pygame.Surface):
         """Draw the calibrated edges and the paddle position on the camera view."""
@@ -188,10 +194,12 @@ class CameraPaddle:
         for edge in (self.left_x, self.right_x):   # calibrated edges
             pygame.draw.line(surf, (255, 255, 255), (edge * w, 0), (edge * w, h), 1)
         # Where the paddle is, drawn back in camera coordinates
-        half = config.PADDLE_WIDTH / 2
-        t = (self.x - half) / (config.WINDOW_WIDTH - 2 * half)
+        t = (self.x + config.PADDLE_X_RANGE_M) / (2 * config.PADDLE_X_RANGE_M)
         cam_x = (self.left_x + t * (self.right_x - self.left_x)) * w
-        pygame.draw.line(surf, (240, 120, 60), (cam_x, 0), (cam_x, h), 3)
+        u = (self.y - config.PADDLE_Y_MAX_M) / (config.PADDLE_Y_MIN_M - config.PADDLE_Y_MAX_M)
+        cam_y = (config.WRIST_Y_HIGH + u * (config.WRIST_Y_LOW - config.WRIST_Y_HIGH)) * h
+        pygame.draw.line(surf, (240, 120, 60), (cam_x, 0), (cam_x, h), 2)
+        pygame.draw.circle(surf, (240, 120, 60), (cam_x, cam_y), 8, 3)
 
     def stop(self):
         pass   # the camera belongs to game.py, which stops it

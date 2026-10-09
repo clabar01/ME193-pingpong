@@ -27,7 +27,7 @@ import inputs
 import mqtt_client
 
 
-def make_sources(args, start_x: float):
+def make_sources(args, start_x: float, start_y: float):
     """Build the camera (if needed) and the paddle / control sources.
 
     The camera is opened once; pose and AprilTag detection share its thread.
@@ -52,9 +52,9 @@ def make_sources(args, start_x: float):
         camera.start()
 
     if pose is not None:
-        paddle_src = pose_input.CameraPaddle(pose, camera=camera, start_x=start_x)
+        paddle_src = pose_input.CameraPaddle(pose, camera=camera, start_x=start_x, start_y=start_y)
     else:
-        paddle_src = inputs.KeyboardPaddle(start_x=start_x)
+        paddle_src = inputs.KeyboardPaddle(start_x=start_x, start_y=start_y)
     tag_src = apriltag_input.TagStart(tags) if tags is not None else None
     return camera, paddle_src, tag_src
 
@@ -111,7 +111,7 @@ def main():
     game = gs.GameState()
     renderer = draw.Renderer(screen)
 
-    camera, paddle_src, tag_src = make_sources(args, game.paddle.x)
+    camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)
     # IMU swings arrive over MQTT, so the IMU needs MQTT on.
     imu_active = config.MQTT_ENABLED and not args.no_imu
     # Only real play may publish the record: camera paddle AND IMU swings.
@@ -155,10 +155,11 @@ def main():
             events = apply_actions(game, actions, paddle_src.ready)
 
             paddle_src.update(dt)
-            game.set_paddle_x(paddle_src.x)
+            game.set_paddle(paddle_src.x, paddle_src.y)
             events += game.update(dt, now, swing_src.last_swing(now))
-            if events:   # for sounds later
-                print(f"streak={game.streak} best={game.best_streak} events={events}")
+            shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
+            if shown:   # for sounds later
+                print(f"streak={game.streak} best={game.best_streak} events={shown}")
             if mqtt is not None:
                 mqtt.update(game)   # record (when it goes up) + game state at 10 Hz
 

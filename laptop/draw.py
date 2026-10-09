@@ -1,18 +1,39 @@
-"""Drawing only: turns a GameState into pixels. No game rules in here."""
+"""Drawing only: turns a GameState into pixels. No game rules in here.
+
+The table scene is drawn in first person with view3d.project(); the HUD
+(state, scores, camera view, MQTT, swing meter) is flat on top.
+"""
 import pygame
 
 import config
 import game_state as gs
+import view3d
 
 BACKGROUND = (18, 24, 38)
+FLOOR = (26, 32, 46)
 WALL = (70, 80, 100)
-BALL = (255, 255, 255)
+TABLE = (28, 78, 140)
+TABLE_EDGE = (18, 50, 92)
+LINE = (235, 240, 245)
+NET = (230, 235, 240, 70)
+POST = (60, 64, 72)
+BALL = (255, 250, 240)
+BALL_EDGE = (200, 190, 170)
 PADDLE = (240, 120, 60)
-HIT_ZONE = (240, 120, 60, 60)   # translucent band showing where hits count
+HANDLE = (120, 80, 50)
+OPPONENT = (215, 60, 70)
+HIT_RING = (255, 210, 160)
 TEXT = (230, 230, 230)
 DIM_TEXT = (150, 160, 180)
 CALIBRATE = (255, 210, 90)
-STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140), gs.MISS: (255, 110, 110)}
+STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
+                gs.MISS: (255, 110, 110), gs.POINT: (120, 220, 140)}
+
+
+def P(x, y, z):
+    """World (m) -> screen point (ints) for pygame."""
+    sx, sy = view3d.project(x, y, z)
+    return round(sx), round(sy)
 
 
 class Renderer:
@@ -101,38 +122,116 @@ class Renderer:
         self.screen.blit(surf, (20, self.screen.get_height() - surf.get_height() - 12))
 
     def _draw_game(self, game: gs.GameState, paddle_src, tags_on: bool):
-        s = self.screen
-        s.fill(BACKGROUND)
-        w, h = s.get_size()
-
-        # Side walls and far wall (the bottom is open: that's the player's side)
-        pygame.draw.line(s, WALL, (1, 0), (1, h), 3)
-        pygame.draw.line(s, WALL, (w - 2, 0), (w - 2, h), 3)
-        pygame.draw.line(s, WALL, (0, 1), (w, 1), 3)
-
-        self._draw_paddle(game.paddle)
-        if game.state != gs.WAITING:
-            b = game.ball
-            pygame.draw.circle(s, BALL, (round(b.x), round(b.y)), round(b.radius))
-            if game.holding:
-                # Waiting for a late swing: a ring closes in on the ball as the
-                # timing window runs out.
-                r = b.radius + (1 - game.hold_progress) * b.radius * 2.5
-                pygame.draw.circle(s, CALIBRATE, (round(b.x), round(b.y)), round(r), 2)
-
+        h = self.screen.get_height()
+        self._draw_scene(game)
         self._draw_hud(game)
         if game.state == gs.WAITING:
             self._draw_waiting(game, paddle_src, tags_on)
         elif game.state == gs.MISS:
-            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.45)
+            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.30)
+        elif game.state == gs.POINT:
+            self._center_text("POINT!  opponent missed", self.font, STATE_COLORS[gs.POINT], h * 0.30)
+            self._center_text("your streak continues", self.small_font, DIM_TEXT, h * 0.30 + 32)
 
-    def _draw_paddle(self, p: gs.Paddle):
-        zone = pygame.Surface((p.hit_zone, config.PADDLE_HEIGHT * 3), pygame.SRCALPHA)
-        zone.fill(HIT_ZONE)
-        self.screen.blit(zone, (p.x - p.hit_zone / 2, p.y - config.PADDLE_HEIGHT))
-        pygame.draw.rect(self.screen, PADDLE,
-                         pygame.Rect(p.x - p.width / 2, p.y, p.width, config.PADDLE_HEIGHT),
-                         border_radius=6)
+    # ------------------------------------------------------------ 3D scene
+    def _draw_scene(self, game: gs.GameState):
+        """First-person table view, drawn back to front (see view3d.py)."""
+        s = self.screen
+        w, h = s.get_size()
+        s.fill(BACKGROUND)
+        pygame.draw.rect(s, FLOOR, (0, config.VIEW_HORIZON_Y, w, h - config.VIEW_HORIZON_Y))
+
+        L, W = config.TABLE_LENGTH, config.TABLE_WIDTH
+        self._draw_opponent(game.opponent)
+        # Table top, its front face, and the white lines
+        top = [P(-W / 2, 0, 0), P(W / 2, 0, 0), P(W / 2, 0, L), P(-W / 2, 0, L)]
+        front = [P(-W / 2, 0, 0), P(W / 2, 0, 0), P(W / 2, -0.04, 0), P(-W / 2, -0.04, 0)]
+        pygame.draw.polygon(s, TABLE_EDGE, front)
+        pygame.draw.polygon(s, TABLE, top)
+        pygame.draw.lines(s, LINE, True, top, 3)
+        pygame.draw.line(s, LINE, P(0, 0, 0), P(0, 0, L), 1)
+
+        ball_visible = game.state != gs.WAITING
+        if ball_visible:
+            self._draw_bounce_mark(game)
+            self._draw_shadow(game.ball)
+        beyond_net = game.ball.z > L / 2
+        if ball_visible and beyond_net:
+            self._draw_ball(game)
+        self._draw_net()
+        if ball_visible and not beyond_net:
+            self._draw_ball(game)
+        self._draw_my_paddle(game)
+
+    def _draw_net(self):
+        L, W, H = config.TABLE_LENGTH, config.TABLE_WIDTH, config.NET_HEIGHT
+        x0, x1 = -W / 2 - 0.08, W / 2 + 0.08
+        quad = [P(x0, 0, L / 2), P(x1, 0, L / 2), P(x1, H, L / 2), P(x0, H, L / 2)]
+        net = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        pygame.draw.polygon(net, NET, quad)
+        self.screen.blit(net, (0, 0))
+        pygame.draw.line(self.screen, LINE, P(x0, H, L / 2), P(x1, H, L / 2), 3)
+        for x in (x0, x1):
+            pygame.draw.line(self.screen, POST, P(x, 0, L / 2), P(x, H, L / 2), 3)
+
+    def _draw_shadow(self, b: gs.Ball):
+        """Dark ellipse on the table under the ball: smaller and fainter the higher it is."""
+        if not gs.on_table(b.x, b.z) or b.y < 0:
+            return
+        sx, sy = P(b.x, 0, b.z)
+        r = view3d.size(config.BALL_RADIUS_M, b.z) * max(0.4, 1 - b.y)
+        alpha = int(120 * max(0.25, 1 - b.y * 1.5))
+        shadow = pygame.Surface((int(r * 2.4) + 2, int(r * 1.0) + 2), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, alpha), shadow.get_rect())
+        self.screen.blit(shadow, shadow.get_rect(center=(sx, sy)))
+
+    def _draw_ball(self, game: gs.GameState):
+        b = game.ball
+        sx, sy = P(b.x, b.y, b.z)
+        r = max(2, view3d.size(config.BALL_RADIUS_M, b.z))
+        pygame.draw.circle(self.screen, BALL, (sx, sy), r)
+        pygame.draw.circle(self.screen, BALL_EDGE, (sx, sy), r, 1)
+        if game.holding:
+            # Waiting for a late swing: a ring closes in on the ball as the
+            # timing window runs out.
+            ring = r + (1 - game.hold_progress) * r * 2.5
+            pygame.draw.circle(self.screen, CALIBRATE, (sx, sy), ring, 2)
+
+    def _draw_bounce_mark(self, game: gs.GameState):
+        """A short-lived ring where the ball last bounced."""
+        if game.last_bounce is None:
+            return
+        x, z, t = game.last_bounce
+        age = game.game_time - t
+        if age > 0.35:
+            return
+        r = view3d.size(0.03 + age * 0.15, z)
+        sx, sy = P(x, 0, z)
+        ring = pygame.Surface((int(r * 2) + 4, int(r) + 4), pygame.SRCALPHA)
+        pygame.draw.ellipse(ring, (255, 255, 255, int(160 * (1 - age / 0.35))), ring.get_rect(), 2)
+        self.screen.blit(ring, ring.get_rect(center=(sx, sy)))
+
+    def _draw_paddle_shape(self, x, y, z, color, alpha, radius_m=config.PADDLE_RADIUS_M):
+        """A round paddle with a handle, as a see-through disk."""
+        sx, sy = P(x, y, z)
+        r = view3d.size(radius_m, z)
+        layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        hx, hy = P(x, y - radius_m * 1.9, z)
+        pygame.draw.line(layer, (*HANDLE, alpha), (sx, sy + r * 0.8), (hx, hy), max(3, int(r * 0.22)))
+        pygame.draw.circle(layer, (*color, alpha), (sx, sy), r)
+        pygame.draw.circle(layer, (*color, 255), (sx, sy), r, 2)
+        self.screen.blit(layer, (0, 0))
+
+    def _draw_opponent(self, opp: gs.Opponent):
+        self._draw_paddle_shape(opp.x, config.OPP_HIT_HEIGHT, config.OPP_HIT_Z, OPPONENT, 220)
+
+    def _draw_my_paddle(self, game: gs.GameState):
+        p = game.paddle
+        z = config.MY_HIT_Z
+        self._draw_paddle_shape(p.x, p.y, z, PADDLE, 50)   # very see-through: never hide the ball
+        # Hit zone for this level: the ball's center must be inside this ring at contact
+        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + game.params["hit_tolerance"]
+        pygame.draw.circle(self.screen, HIT_RING, P(p.x, p.y, z), view3d.size(reach, z), 1)
 
     def _draw_hud(self, game: gs.GameState):
         state = self.font.render(game.state, True, STATE_COLORS[game.state])
@@ -151,6 +250,9 @@ class Renderer:
         h = self.screen.get_height()
         ready = paddle_src is None or paddle_src.ready
         camera = paddle_src is not None and paddle_src.kind == "camera"
+        panel = pygame.Surface((760, 250), pygame.SRCALPHA)
+        panel.fill((10, 14, 24, 200))
+        self.screen.blit(panel, panel.get_rect(center=(self.screen.get_width() / 2, h * 0.45)))
         self._center_text("PING PONG", self.big_font, TEXT, h * 0.32)
         if ready:
             start = ("Hold up a level tag (0-2) for 1 s, or press SPACE" if tags_on
@@ -158,8 +260,8 @@ class Renderer:
             self._center_text(start, self.font, STATE_COLORS[gs.WAITING], h * 0.46)
         levels = "   ".join(f"[{n}] {v['name']}" for n, v in sorted(config.LEVELS.items()))
         self._center_text(f"Pick a level: {levels}", self.small_font, DIM_TEXT, h * 0.54)
-        hint = ("Your wrist moves the paddle.  C recalibrates.  Esc quits." if camera
-                else "Left / Right arrows move the paddle.  Esc quits.")
+        hint = ("Your wrist moves the paddle (left/right, up/down).  C recalibrates.  Esc quits." if camera
+                else "Arrow keys move the paddle (left/right, up/down).  Space = swing.  Esc quits.")
         self._center_text(hint, self.small_font, DIM_TEXT, h * 0.60)
 
     def _draw_camera(self, view):
@@ -179,8 +281,9 @@ class Renderer:
             self._center_text(message, self.font, CALIBRATE, h * 0.72)
         elif not src.has_hand:
             # Paddle is frozen until the wrist is seen again
-            self._center_text("no hand", self.font, STATE_COLORS[gs.MISS],
-                              game.paddle.y - 50)
+            p = game.paddle
+            _, y = P(p.x, p.y + config.PADDLE_RADIUS_M * 1.4, config.MY_HIT_Z)
+            self._center_text("no hand", self.font, STATE_COLORS[gs.MISS], y)
 
     def _center_text(self, text, font, color, y):
         surf = font.render(text, True, color)

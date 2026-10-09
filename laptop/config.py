@@ -35,34 +35,70 @@ FPS = 60
 MAX_DT = 1 / 20     # cap one frame's time step (s) so a hiccup can't teleport the ball
 
 # ---------------------------------------------------------------- Levels
-# The AprilTag ID held up at the start selects the level (for now: number
-# keys 0-2 on the WAITING screen).
-#   ball_speed: pixels per second (the ball's speed never changes during a rally)
-#   hit_zone:   width in pixels of the hit zone, centered on the paddle
-#               (bigger = easier). The ball's center must be inside it.
+# The AprilTag ID held up at the start selects the level (or keys 0-2 on the
+# WAITING screen).
+#   ball_speed:    m/s along the table for the opponent's shots (serve/returns)
+#   hit_tolerance: m of slack around "paddle touches ball" (bigger = easier):
+#                  a hit needs ball-to-paddle distance <= paddle radius + ball
+#                  radius + this
+#   opponent:      the AI (see OPPONENT below): reaction delay (s) before it
+#                  starts moving, max speed (m/s) across the table, aim error
+#                  (m, random offset in where it thinks the ball will come)
+#                  Miss rates in the comments: simulated over 400 of my returns.
 LEVELS = {
-    0: {"name": "Easy",   "ball_speed": 300, "hit_zone": 250},
-    1: {"name": "Medium", "ball_speed": 450, "hit_zone": 180},
-    2: {"name": "Hard",   "ball_speed": 600, "hit_zone": 120},
+    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": 0.08,
+        "opponent": {"reaction_s": 0.28, "max_speed": 1.4, "aim_error_m": 0.10}},   # misses ~20%
+    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": 0.05,
+        "opponent": {"reaction_s": 0.22, "max_speed": 1.8, "aim_error_m": 0.07}},   # misses ~9%
+    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": 0.025,
+        "opponent": {"reaction_s": 0.16, "max_speed": 2.2, "aim_error_m": 0.06}},   # misses ~3%
 }
 DEFAULT_LEVEL = 0   # used when starting from the keyboard (no tag)
 
-# ---------------------------------------------------------------- Ball
-BALL_RADIUS = 12
-# A new ball is served from the far wall, aimed at the player, at a random
-# angle up to this many degrees either side of straight down.
-SERVE_ANGLE_DEG = 30
-# After a hit the ball goes back toward the far wall. Hitting it off-center
-# angles it, like real pong: at the edge of the hit zone the angle from
-# straight up is this many degrees; at the center it goes straight up.
-MAX_BOUNCE_ANGLE_DEG = 50
+# ---------------------------------------------------------------- Table & world (meters)
+# x: across the table (0 = center, + = right), z: along it (0 = MY end,
+# TABLE_LENGTH = the opponent's end), y: height above the table surface.
+TABLE_LENGTH = 2.74
+TABLE_WIDTH = 1.525
+NET_HEIGHT = 0.1525
+NET_CLEARANCE = 0.05     # every shot is aimed to pass at least this far above the net
+GRAVITY = 9.81           # m/s^2
+BOUNCE_RESTITUTION = 0.85   # fraction of vertical speed kept in a bounce on the table
+BALL_RADIUS_M = 0.025    # a little bigger than a real ball (0.02) so it's easy to see
 
-# ---------------------------------------------------------------- Paddle
-# The player's side is the bottom of the screen; the paddle slides left/right.
-PADDLE_WIDTH = 120
-PADDLE_HEIGHT = 16
-PADDLE_Y_FROM_BOTTOM = 60   # distance from the bottom edge to the paddle's top
-PADDLE_KEY_SPEED = 700      # px/s when moving the paddle with the arrow keys
+# Hitting planes: where each player's paddle meets the ball (behind each end)
+MY_HIT_Z = -0.20
+OPP_HIT_Z = TABLE_LENGTH + 0.20
+
+# Where shots land: opponent shots land on my side in this depth range...
+MY_LANDING_Z = (0.35, 1.00)
+# ...and mine land on the opponent's side: depth goes from shallow (soft swing)
+# to deep (hard swing).
+OPP_LANDING_Z_SOFT = TABLE_LENGTH / 2 + 0.30
+OPP_LANDING_Z_HARD = TABLE_LENGTH - 0.15
+LANDING_X_MAX = 0.55     # shots land within +-this across the table
+SERVE_HEIGHT = 0.30      # opponent serves from this height above the table
+
+# ---------------------------------------------------------------- View (first person)
+# A pinhole camera at my end of the table, looking straight along it.
+VIEW_CAM_X = 0.0
+VIEW_CAM_Y = 0.55        # eye height above the table (m)
+VIEW_CAM_Z = -1.20       # behind my end (m)
+VIEW_FOCAL_PX = 940      # bigger = more zoomed in
+VIEW_HORIZON_Y = 220     # screen y of the horizon (where the camera looks)
+
+# ---------------------------------------------------------------- My paddle
+# The paddle moves in my hitting plane (z = MY_HIT_Z): x across, y = height.
+PADDLE_RADIUS_M = 0.08
+PADDLE_X_RANGE_M = 0.65      # x from -this to +this (keeps the paddle on screen)
+PADDLE_Y_MIN_M = 0.05        # lowest / highest paddle height above the table
+PADDLE_Y_MAX_M = 0.75
+PADDLE_KEY_SPEED = 1.2       # m/s with the arrow keys (left/right/up/down)
+
+# ---------------------------------------------------------------- Opponent
+OPP_REACH_M = 0.12       # the opponent returns the ball if its paddle is within this (x) at its plane
+OPP_HIT_HEIGHT = 0.30    # height its paddle is drawn at
+POINT_PAUSE_S = 1.0      # pause after the opponent misses, before the next serve
 
 # ---------------------------------------------------------------- Camera paddle (pose_input.py)
 # Choose with:  python laptop/game.py --input camera   (keyboard is the default)
@@ -84,6 +120,11 @@ CALIB_COUNTDOWN_S = 3.0      # time to get into position before each sample
 CALIB_SAMPLE_S = 0.5         # wrist x is averaged over this final stretch
 CALIB_MIN_SPAN = 0.15        # left and right must differ by this much of the frame width
 CAMERA_PREVIEW_WIDTH = 320   # size of the camera view drawn in the game window
+# Paddle height from the wrist's height in the camera image (0 = top, 1 = bottom),
+# no calibration: wrist at WRIST_Y_HIGH -> paddle at PADDLE_Y_MAX_M, wrist at
+# WRIST_Y_LOW -> paddle at PADDLE_Y_MIN_M, linear in between (clamped).
+WRIST_Y_HIGH = 0.25
+WRIST_Y_LOW = 0.75
 
 # ---------------------------------------------------------------- AprilTags (apriltag_input.py)
 # Detected with OpenCV's aruco module, as in the AprilTag parking project.
@@ -108,16 +149,17 @@ TAG_DROPOUT_S = 0.25
 SWING_WINDOW_BEFORE_S = 0.15   # a swing may arrive this much before contact
 SWING_WINDOW_AFTER_S = 0.55    # ...or this much after (covers the 485 ms worst case + detection)
 # While waiting for a late swing, the ball presses into the paddle: it keeps
-# its direction but slows down with this time constant (s), so it sinks only
-# a few pixels past the line before stopping.
+# its direction but slows down with this time constant (s)...
 HOLD_DECAY_S = 0.04
+HOLD_MAX_SINK_M = 0.04   # ...and goes at most this far past my hitting plane
 
 # ---------------------------------------------------------------- Return speed (harder swing = faster)
 # After a hit the ball goes back at the level's ball_speed times a factor set
 # by the swing's peak acceleration: RETURN_FACTOR_MIN at or below
 # RETURN_PEAK_LOW_G, RETURN_FACTOR_MAX at or above RETURN_PEAK_HIGH_G, linear
-# in between. Only the trip back: the ball returns to the level's speed when
-# it bounces off the far wall. Hits without a measured peak use 1.0.
+# in between. The same factor also sets how DEEP the return lands on the
+# opponent's side (OPP_LANDING_Z_SOFT .. _HARD). The opponent's shots always
+# use the level's speed. Hits without a measured peak use 1.0.
 RETURN_PEAK_LOW_G = 2.2        # = the IMU's MIN_ACCEL_PEAK_G: the softest swing that counts
 RETURN_PEAK_HIGH_G = 5.5       # about the hardest swings in the hand tests
 RETURN_FACTOR_MIN = 0.8
