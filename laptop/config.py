@@ -23,6 +23,7 @@ RECORD_LOAD_WAIT_S = 2.0
 # record changes. Nothing else is ever published on this topic.
 SCORE_TOPIC = "ME193/Rogers/CeciLaBarge"
 IMU_TOPIC = "ME193/CeciLaBarge/imu"     # UNO Q -> laptop: swing events
+IMU_RAW_TOPIC = "ME193/CeciLaBarge/imu/raw"   # UNO Q -> laptop, DEBUG only: raw samples (labeling)
 GAME_TOPIC = "ME193/CeciLaBarge/game"   # laptop -> UNO Q: ball position + state
 
 # ---------------------------------------------------------------- Window

@@ -2,8 +2,8 @@
 
 Run from the repo root:  python tools/imu_logger.py      (Ctrl+C to stop)
 
-Subscribes to IMU_TOPIC and prints every swing with its peak and the time
-since the previous swing. Also shows how long the message took from the board
+Subscribes to IMU_TOPIC and prints every swing with its peak (accel, and the
+peak rotation speed in deg/s) and the time since the previous swing. Also shows how long the message took from the board
 to this laptop (only meaningful if both clocks are synced, which they normally
 are via the internet). Broker and topic come from laptop/config.py.
 """
@@ -42,6 +42,8 @@ def main():
         try:
             event = json.loads(msg.payload)
             t, peak = float(event["t"]), float(event["peak"])
+            unit = event.get("unit", "g")
+            gyro = event.get("peak_gyro")
             assert event.get("swing") == 1
         except (ValueError, KeyError, TypeError, AssertionError):
             print(f"{stamp}  unexpected message: {msg.payload[:200]!r}", flush=True)
@@ -51,7 +53,9 @@ def main():
         state["prev_t"] = t
         delay_ms = (arrived - t) * 1000
         delay = f"{delay_ms:5.0f} ms board->laptop" if -2000 < delay_ms < 10000 else "clocks not in sync"
-        print(f"{stamp}  SWING #{state['count']:<3d} peak {peak:5.2f} g   {gap:24s}  ({delay})",
+        gyro_text = f"gyro {gyro:5.0f} dps" if gyro is not None else "gyro    -    "
+        print(f"{stamp}  SWING #{state['count']:<3d} peak {peak:5.2f} {unit:3s} {gyro_text}  "
+              f"{gap:24s}  ({delay})",
               flush=True)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
