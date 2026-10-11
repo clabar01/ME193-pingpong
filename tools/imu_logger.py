@@ -2,7 +2,8 @@
 
 Run from the repo root:  python tools/imu_logger.py      (Ctrl+C to stop)
 
-Subscribes to IMU_TOPIC and prints every swing with its peak (accel, and the
+Subscribes to IMU_TOPIC (on the board's local broker by default, see
+ArduinoApps/local_broker; --broker hivemq for the public one) and prints every swing with its peak (accel, and the
 peak rotation speed in deg/s) and the time since the previous swing. Also
 prints moves the board REJECTED (IMU_REJECTED_TOPIC: started like a swing but
 failed the accel or gyro check), marked "rejected", with the check(s) failed.
@@ -19,6 +20,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "laptop"))
+import board_settings  # noqa: E402
 import config  # noqa: E402
 
 
@@ -26,14 +28,19 @@ def main():
     parser = argparse.ArgumentParser(description="Print swing events from the paddle IMU")
     parser.add_argument("--topic", default=config.IMU_TOPIC,
                         help=f"topic to watch (default: {config.IMU_TOPIC})")
+    parser.add_argument("--broker", choices=["local", "hivemq"], default="local",
+                        help="local = Mosquitto on the board (BOARD_IP), hivemq = public broker")
     args = parser.parse_args()
+    host = board_settings.board_ip() if args.broker == "local" else config.MQTT_BROKER
+    if not host:
+        sys.exit("No BOARD_IP in ~/ArduinoApps/tools/board_secrets.py; use --broker hivemq")
 
     state = {"count": 0, "prev_t": None, "stopping": False}
 
     rejected_topic = args.topic + "/rejected"
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        print(f"Connected to {config.MQTT_BROKER}:{config.MQTT_PORT} ({reason_code}); "
+        print(f"Connected to {host}:{config.MQTT_PORT} ({args.broker}, {reason_code}); "
               f"watching {args.topic} (+ /rejected). Swing the paddle!", flush=True)
         client.subscribe(args.topic)
         client.subscribe(rejected_topic)
@@ -74,7 +81,7 @@ def main():
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.reconnect_delay_set(config.MQTT_RECONNECT_MIN_S, config.MQTT_RECONNECT_MAX_S)
-    client.connect_async(config.MQTT_BROKER, config.MQTT_PORT, keepalive=config.MQTT_KEEPALIVE_S)
+    client.connect_async(host, config.MQTT_PORT, keepalive=config.MQTT_KEEPALIVE_S)
     try:
         client.loop_forever(retry_first_connection=True)
     except KeyboardInterrupt:

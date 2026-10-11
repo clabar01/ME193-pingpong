@@ -68,7 +68,7 @@ def swing_display(swing_src, mqtt, now: float) -> dict:
     last = mqtt.last_swing_info if mqtt is not None and swing_src.kind != "always" else None
     if last is not None:
         info.update(peak=last["peak"], peak_gyro=last["peak_gyro"], delay_ms=last["delay_ms"],
-                    age_s=now - last["arrival"], count=last["count"])
+                    age_s=now - last["arrival"], count=last["count"], via=last.get("via"))
     if swing_src.kind.endswith("keyboard"):
         key = swing_src.sources[-1].last_swing(now)
         if key is not None and (info["age_s"] is None or now - key.arrival < info["age_s"]):
@@ -161,7 +161,8 @@ def main():
             paddle_src.update(dt)
             game.set_paddle(paddle_src.x, paddle_src.y)
             game.tracking_ok = paddle_src.has_hand
-            events += game.update(dt, now, swing_src.last_swing(now))
+            rejected = mqtt.last_rejected if mqtt is not None and swing_src.kind != "always" else None
+            events += game.update(dt, now, swing_src.last_swing(now), rejected)
             while game.ball_results:
                 log.add(game.ball_results.pop(0))
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty

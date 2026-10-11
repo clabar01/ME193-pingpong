@@ -146,7 +146,7 @@ class CameraPaddle:
         hand = config.TRACK_WRIST.upper()
         edge = "LEFT" if self.step == CALIB_LEFT else "RIGHT"
         left = max(0.0, config.CALIB_COUNTDOWN_S - (time.monotonic() - self._step_start))
-        extra = f"  ({self._calib_note})" if self._calib_note else ""
+        extra = f"\n{self._calib_note}" if self._calib_note else ""
         return f"Calibrate: reach your {hand} hand to your {edge} edge... {math.ceil(left)}{extra}"
 
     def handle_event(self, event):
@@ -187,19 +187,34 @@ class CameraPaddle:
         self.y += config.SMOOTHING_ALPHA * (target_y - self.y)
 
     def draw_on_preview(self, surf: pygame.Surface):
-        """Draw the calibrated edges and the paddle position on the camera view."""
-        if self.step != READY:
-            return
+        """On the camera view: the calibrated range (shaded outside, green edges
+        labeled L / R with the span in %), and the tracked wrist (yellow). During
+        calibration: the wrist and the edge recorded so far."""
         w, h = surf.get_size()
-        for edge in (self.left_x, self.right_x):   # calibrated edges
-            pygame.draw.line(surf, (255, 255, 255), (edge * w, 0), (edge * w, h), 1)
-        # Where the paddle is, drawn back in camera coordinates
-        t = (self.x + config.PADDLE_X_RANGE_M) / (2 * config.PADDLE_X_RANGE_M)
-        cam_x = (self.left_x + t * (self.right_x - self.left_x)) * w
-        u = (self.y - config.PADDLE_Y_MAX_M) / (config.PADDLE_Y_MIN_M - config.PADDLE_Y_MAX_M)
-        cam_y = (config.WRIST_Y_HIGH + u * (config.WRIST_Y_LOW - config.WRIST_Y_HIGH)) * h
-        pygame.draw.line(surf, (240, 120, 60), (cam_x, 0), (cam_x, h), 2)
-        pygame.draw.circle(surf, (240, 120, 60), (cam_x, cam_y), 8, 3)
+        font = pygame.font.SysFont(None, 22)
+        edge_color, wrist_color = (90, 230, 120), (255, 220, 60)
+        edges = [(self.left_x, "L")] if self.left_x is not None and self.step != CALIB_LEFT else []
+        if self.step == READY:
+            edges.append((self.right_x, "R"))
+            # Darken outside the calibrated range
+            shade = pygame.Surface((w, h), pygame.SRCALPHA)
+            shade.fill((0, 0, 0, 120))
+            shade.fill((0, 0, 0, 0), pygame.Rect(self.left_x * w, 0, (self.right_x - self.left_x) * w, h))
+            surf.blit(shade, (0, 0))
+            span = font.render(f"range {(self.right_x - self.left_x) * 100:.0f}% of view", True, edge_color)
+            surf.blit(span, ((self.left_x + self.right_x) / 2 * w - span.get_width() / 2, h - 22))
+        for x, label in edges:
+            pygame.draw.line(surf, edge_color, (x * w, 0), (x * w, h), 3)
+            tag = font.render(label, True, (0, 0, 0), edge_color)
+            surf.blit(tag, (x * w - tag.get_width() / 2, 4))
+        r = self._reading
+        if r is not None and r.wrist_x is not None and self.has_hand:
+            wx, wy = r.wrist_x * w, r.wrist_y * h
+            pygame.draw.line(surf, wrist_color, (wx, 0), (wx, h), 1)
+            pygame.draw.circle(surf, wrist_color, (wx, wy), 11, 3)
+        elif self.step != READY or not self.has_hand:
+            msg = font.render("no wrist", True, (255, 255, 255), (200, 50, 60))
+            surf.blit(msg, (w / 2 - msg.get_width() / 2, h / 2 - 10))
 
     def stop(self):
         pass   # the camera belongs to game.py, which stops it
@@ -222,11 +237,20 @@ class CameraPaddle:
             self.step = CALIB_RIGHT
             self._restart_step("")
         else:
-            if value - self.left_x < config.CALIB_MIN_SPAN:
-                # Right edge must be clearly to the right of the left edge
-                # (in the mirrored image, your left is the image's left).
+            span = value - self.left_x
+            if span < config.CALIB_MIN_SPAN:
+                # The range must cover enough of the camera image: a narrow range
+                # makes tiny wrist moves sweep the paddle across the whole table.
+                # (In the mirrored image, your left is the image's left.)
                 self.start_calibration()
-                self._calib_note = "edges too close, reach further"
+                if span <= 0:
+                    self._calib_note = "right edge wasn't right of the left one: try again"
+                else:
+                    self._calib_note = (f"range only {span * 100:.0f}% of the camera width "
+                                        f"(need {config.CALIB_MIN_SPAN * 100:.0f}%): "
+                                        f"stand centered, reach farther")
+                print(f"Calibration rejected: left={self.left_x:.2f} right={value:.2f} "
+                      f"({span * 100:.0f}% of the frame, need {config.CALIB_MIN_SPAN * 100:.0f}%)")
                 return
             self.right_x = value
             self.step = READY

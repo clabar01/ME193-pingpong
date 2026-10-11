@@ -15,6 +15,12 @@ MQTT_KEEPALIVE_S = 30                # broker notices a dead connection after ~1
 MQTT_RECONNECT_MIN_S = 1             # automatic reconnect: wait 1 s, doubling up to...
 MQTT_RECONNECT_MAX_S = 10            # ...10 s between attempts
 GAME_PUBLISH_HZ = 10                 # game state messages per second on GAME_TOPIC
+# Local broker (Mosquitto on the UNO Q, ArduinoApps/local_broker) for the fast
+# topics: swings and game state. The record (SCORE_TOPIC) always uses MQTT_BROKER.
+# Host None = the board's IP (BOARD_IP in ~/ArduinoApps/tools/board_secrets.py).
+LOCAL_BROKER_ENABLED = True
+LOCAL_BROKER_HOST = None
+LOCAL_BROKER_PORT = 1883
 # At startup the record is read from SCORE_TOPIC's retained value; if none
 # arrives this long after subscribing, the topic counts as empty.
 RECORD_LOAD_WAIT_S = 2.0
@@ -23,7 +29,7 @@ RECORD_LOAD_WAIT_S = 2.0
 # record changes. Nothing else is ever published on this topic.
 SCORE_TOPIC = "ME193/Rogers/CeciLaBarge"
 IMU_TOPIC = "ME193/CeciLaBarge/imu"     # UNO Q -> laptop: swing events
-IMU_REJECTED_TOPIC = "ME193/CeciLaBarge/imu/rejected"   # UNO Q -> laptop: near-miss moves (tuning only)
+IMU_REJECTED_TOPIC = "ME193/CeciLaBarge/imu/rejected"   # UNO Q -> laptop: moves that failed the swing checks
 IMU_RAW_TOPIC = "ME193/CeciLaBarge/imu/raw"   # UNO Q -> laptop, DEBUG only: raw samples (labeling)
 GAME_TOPIC = "ME193/CeciLaBarge/game"   # laptop -> UNO Q: ball position + state
 
@@ -120,7 +126,8 @@ SMOOTHING_ALPHA = 0.35
 # reach to your left edge, hold for the countdown, then the same on the right.
 CALIB_COUNTDOWN_S = 3.0      # time to get into position before each sample
 CALIB_SAMPLE_S = 0.5         # wrist x is averaged over this final stretch
-CALIB_MIN_SPAN = 0.15        # left and right must differ by this much of the frame width
+CALIB_MIN_SPAN = 0.35        # left and right must differ by at least this much of the frame
+                             # width; narrower = tiny wrist moves cross the whole table
 CAMERA_PREVIEW_WIDTH = 320   # size of the camera view drawn in the game window
 # Paddle height from the wrist's height in the camera image (0 = top, 1 = bottom),
 # no calibration: wrist at WRIST_Y_HIGH -> paddle at PADDLE_Y_MAX_M, wrist at

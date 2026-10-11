@@ -13,12 +13,14 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COLUMNS = ["time", "level", "mode", "result", "reason", "distance_cm", "off_by_cm",
-           "tolerance_cm", "swing_offset_ms", "swing_peak_g", "swing_peak_dps", "hand_tracked"]
+           "tolerance_cm", "swing_offset_ms", "swing_peak_g", "swing_peak_dps", "hand_tracked",
+           "rejected_why"]
 REASON_TEXT = {
     "OUT_OF_ZONE": "out of zone (paddle not on the ball)",
     "NO_SWING": "no swing",
     "SWING_TOO_EARLY": "swing too early",
     "SWING_TOO_LATE": "swing too late",
+    "SWING_REJECTED": "swing rejected by the IMU checks",
     "NO_CONTACT": "ball never reached the paddle",
 }
 

@@ -65,6 +65,7 @@ class Swing:
     arrival: float                 # when the laptop got the swing (time.monotonic())
     peak: Optional[float] = None   # peak acceleration in g (|a| - 1 g), if measured
     peak_gyro: Optional[float] = None   # peak rotation speed in deg/s, if measured
+    failed: Optional[list] = None       # rejected moves only: the check(s) it failed
 
 
 # Miss reasons (diagnostics: shown on screen and logged; they don't change the rule)
@@ -72,6 +73,8 @@ REASON_OUT_OF_ZONE = "OUT_OF_ZONE"      # paddle never on the ball's crossing sp
 REASON_NO_SWING = "NO_SWING"            # no swing near contact (check 3)
 REASON_TOO_EARLY = "SWING_TOO_EARLY"    # a swing arrived, but before the window opened
 REASON_TOO_LATE = "SWING_TOO_LATE"      # a swing arrived, but after the window closed
+REASON_REJECTED = "SWING_REJECTED"      # a move arrived in time, but the IMU rejected it
+                                        # (accel or gyro below the swing thresholds)
 REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plane
 
 
@@ -153,6 +156,20 @@ def is_hit(ball: Ball, paddles: list, tolerance: float, contact_time: Optional[f
     if now > closes:
         return False   # window closed without a swing
     return None        # window still open: wait
+
+
+def rejected_text(rej: Swing, contact: float) -> str:
+    """e.g. "SWING REJECTED (accel 1.8 g < 2.2)  +240 ms" from the IMU's failed checks."""
+    parts = []
+    for check in rej.failed or []:          # e.g. "accel < 2.2 g", "gyro < 500 dps"
+        limit = check.split("<")[-1].strip().split()[0] if "<" in check else "?"
+        if check.startswith("accel") and rej.peak is not None:
+            parts.append(f"accel {rej.peak:.1f} g < {limit}")
+        elif check.startswith("gyro") and rej.peak_gyro is not None:
+            parts.append(f"gyro {rej.peak_gyro:.0f} dps < {limit}")
+        else:
+            parts.append(check)
+    return f"SWING REJECTED ({', '.join(parts) or 'failed check'})  {(rej.arrival - contact) * 1000:+.0f} ms"
 
 
 def return_speed_factor(peak: Optional[float]) -> float:
@@ -283,6 +300,7 @@ class GameState:
         self.ball_results = []        # finished balls, drained by game.py (CSV log)
         self._contact_info = None     # distances etc. measured at contact
         self._pending_miss = None     # miss record waiting to see if a late swing turns up
+        self._rejected = None         # latest rejected move (from update())
 
     # ------------------------------------------------------------ controls
     @property
@@ -334,9 +352,11 @@ class GameState:
         return min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
 
     # ------------------------------------------------------------ update
-    def update(self, dt: float, now: float, swing: Optional[Swing] = None) -> list:
+    def update(self, dt: float, now: float, swing: Optional[Swing] = None,
+               rejected: Optional[Swing] = None) -> list:
         """Advance the game by dt seconds. `now` = time.monotonic(); `swing` =
-        the latest swing from the swing source (or None). Returns events."""
+        the latest swing from the swing source (or None); `rejected` = the
+        latest move the IMU rejected (diagnostics only). Returns events."""
         dt = min(dt, config.MAX_DT)
         self._now = now
         self.game_time += dt
@@ -348,6 +368,7 @@ class GameState:
         while self._paddle_history and self._paddle_history[0][0] < now - config.PADDLE_LOOKBACK_S - 0.05:
             self._paddle_history.popleft()
 
+        self._rejected = rejected
         self._watch_for_late_swing(swing, now)
 
         if self.state in (MISS, POINT):
@@ -515,7 +536,13 @@ class GameState:
             self.ball_results.append(self._record("miss", REASON_OUT_OF_ZONE, None))
             return
         opens = contact - config.SWING_WINDOW_BEFORE_S
-        if (swing is not None and swing.arrival < opens
+        closes = contact + config.SWING_WINDOW_AFTER_S
+        rej = self._rejected
+        if rej is not None and opens <= rej.arrival <= closes:
+            # A move came in time but didn't pass the IMU's swing checks
+            self.miss_text = rejected_text(rej, contact)
+            record = self._record("miss", REASON_REJECTED, rej)
+        elif (swing is not None and swing.arrival < opens
                 and contact - swing.arrival <= config.EARLY_SWING_LOOK_S):
             offset_ms = (swing.arrival - contact) * 1000
             self.miss_text = f"SWING TOO EARLY  {offset_ms:+.0f} ms"
@@ -539,6 +566,11 @@ class GameState:
             offset_ms = (swing.arrival - contact) * 1000
             self.miss_text = f"SWING TOO LATE  {offset_ms:+.0f} ms"
             record.update(self._record("miss", REASON_TOO_LATE, swing))
+        rej = self._rejected
+        if (rej is not None and record["reason"] == REASON_NO_SWING
+                and closes < rej.arrival <= watch_until):
+            self.miss_text = rejected_text(rej, contact) + " (late)"
+            record.update(self._record("miss", REASON_REJECTED, rej))
         if now >= watch_until or self.state == PLAYING:
             self.ball_results.append(record)
             self._pending_miss = None
@@ -559,6 +591,7 @@ class GameState:
             "swing_peak_g": None if swing is None else swing.peak,
             "swing_peak_dps": None if swing is None else swing.peak_gyro,
             "hand_tracked": info.get("tracking_ok"),
+            "rejected_why": "" if swing is None or not swing.failed else "; ".join(swing.failed),
         }
 
     def flush_results(self):

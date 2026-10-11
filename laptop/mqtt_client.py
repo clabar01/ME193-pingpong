@@ -38,10 +38,13 @@ callbacks just set flags (paho holds an internal lock while calling
 on_publish, so sharing a lock with the game thread could deadlock the game).
 """
 import json
+import threading
 import time
+from collections import deque
 
 import paho.mqtt.client as mqtt
 
+import board_settings
 import config
 import game_state as gs
 from game_state import Swing
@@ -95,6 +98,29 @@ class GameMqtt:
         self.client.connect_async(self.broker, self.port, keepalive=config.MQTT_KEEPALIVE_S)
         self.client.loop_start()
 
+        # FAST PATH: the local broker on the UNO Q (ArduinoApps/local_broker) for
+        # swings (IMU_TOPIC, IMU_REJECTED_TOPIC) and game state (GAME_TOPIC). It
+        # bridges those topics to hivemq, so if it's down everything still works
+        # over hivemq (just slower). Swings are taken from whichever broker
+        # delivers them first; the copy from the other one is dropped.
+        self.local_host = (config.LOCAL_BROKER_HOST or board_settings.board_ip()
+                           if config.LOCAL_BROKER_ENABLED else None)
+        self.local_connected = False
+        self.last_swing_via = None     # which broker delivered the latest swing
+        self._seen = deque(maxlen=64)  # recent (topic, t, peak) keys, to drop bridge duplicates
+        self._seen_lock = threading.Lock()   # only paho threads take it (never the game thread)
+        self.last_rejected = None      # latest rejected move (Swing with .failed)
+        self.local = None
+        if self.local_host:
+            self.local = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+            self.local.on_connect = self._on_local_connect
+            self.local.on_disconnect = self._on_local_disconnect
+            self.local.on_message = lambda c, u, msg: self._on_imu(msg, "local")
+            self.local.reconnect_delay_set(config.MQTT_RECONNECT_MIN_S, config.MQTT_RECONNECT_MAX_S)
+            self.local.connect_async(self.local_host, config.LOCAL_BROKER_PORT,
+                                     keepalive=config.MQTT_KEEPALIVE_S)
+            self.local.loop_start()
+
     # ------------------------------------------------------------ game -> MQTT
     def update(self, game: gs.GameState):
         """Call once per frame from the game loop. Never blocks."""
@@ -112,16 +138,26 @@ class GameMqtt:
             self._last_game_publish = now
             self.publish_game(game)
 
+    def fast_path(self) -> str:
+        """Which broker carries swings and game state right now (for the screen)."""
+        if self.local_connected:
+            return f"local {self.local_host}"
+        if self.connected:
+            return "hivemq (local down)" if self.local_host else "hivemq"
+        return "none"
+
     def status(self) -> str:
         """Short text for the screen, after "MQTT: connected/disconnected"."""
+        fast = f"IMU/game via {self.fast_path()}"
         if not self.record_loaded:
-            return "loading record..." if self.connected else "record not loaded"
+            return f"{fast}  |  " + ("loading record..." if self.connected else "record not loaded")
         rec = "none" if self._broker_value is None else f"{self._broker_value:g}"
         publishing = "publishing" if self.publish_score else f"not publishing ({self.why_not})"
-        return f"record on broker {rec}, {publishing}"
+        return f"{fast}  |  record (hivemq) {rec}, {publishing}"
 
     def publish_game(self, game: gs.GameState):
-        if not self.connected:
+        client = self.local if self.local_connected else self.client if self.connected else None
+        if client is None:
             return   # nothing to do offline; the next message replaces this one anyway
         bx, by = game.ball_normalized()
         msg = {
@@ -132,12 +168,14 @@ class GameMqtt:
             "y": round(by, 3),   # 0 = opponent's end, 1 = my end
             "h": round(max(game.ball.y, 0.0), 3),   # ball height above the table (m)
         }
-        self.client.publish(self.game_topic, json.dumps(msg), qos=0, retain=False)
+        client.publish(self.game_topic, json.dumps(msg), qos=0, retain=False)
 
     def stop(self):
         self._stopping = True
-        self.client.disconnect()
-        self.client.loop_stop()
+        for c in (self.client, self.local):
+            if c is not None:
+                c.disconnect()
+                c.loop_stop()
 
     # ------------------------------------------------------------ record internals
     def _try_load(self, game: gs.GameState):
@@ -180,7 +218,8 @@ class GameMqtt:
         if not reason_code.is_failure:
             self._connections += 1
             client.subscribe(self.score_topic, qos=1)   # to read the retained record
-            client.subscribe(config.IMU_TOPIC)            # swing events from the paddle
+            client.subscribe(config.IMU_TOPIC)            # swing events (fallback path)
+            client.subscribe(config.IMU_REJECTED_TOPIC)
         self.connected = not reason_code.is_failure
         print(f"MQTT: connect to {self.broker}:{self.port}: {reason_code}")
 
@@ -188,9 +227,21 @@ class GameMqtt:
         if self._subscribed_at is None:
             self._subscribed_at = time.monotonic()
 
+    def _on_local_connect(self, client, userdata, flags, reason_code, properties):
+        self.local_connected = not reason_code.is_failure
+        if self.local_connected:
+            client.subscribe(config.IMU_TOPIC)
+            client.subscribe(config.IMU_REJECTED_TOPIC)
+        print(f"MQTT local: connect to {self.local_host}:{config.LOCAL_BROKER_PORT}: {reason_code}")
+
+    def _on_local_disconnect(self, client, userdata, flags, reason_code, properties):
+        if self.local_connected and not self._stopping:
+            print(f"MQTT local: disconnected ({reason_code}); using hivemq until it's back")
+        self.local_connected = False
+
     def _on_message(self, client, userdata, msg):
-        if msg.topic == config.IMU_TOPIC:
-            self._on_swing(msg)
+        if msg.topic in (config.IMU_TOPIC, config.IMU_REJECTED_TOPIC):
+            self._on_imu(msg, "hivemq")
             return
         # Only the first retained message matters (the record at startup).
         # Later ones are our own publishes coming back, or a re-sent retained
@@ -207,29 +258,42 @@ class GameMqtt:
             self._retained = None   # treat as empty; the next record overwrites it
         self._retained_seen = True
 
-    def _on_swing(self, msg):
-        """A swing event from paddle_imu: {"swing": 1, "peak": g, "peak_gyro": dps, "t": board time}."""
+    def _on_imu(self, msg, via: str):
+        """A swing (IMU_TOPIC) or rejected move (IMU_REJECTED_TOPIC) from
+        paddle_imu: {"swing": 1|0, "peak": g, "peak_gyro": dps, "t": board time,
+        ["failed": [...]]}. The same event can arrive from both brokers (the
+        local one bridges to hivemq): only the first copy counts."""
         arrival = time.monotonic()
         wall = time.time()
         try:
             event = json.loads(msg.payload)
-            if event.get("swing") != 1:
-                return
             peak = float(event["peak"])
         except (ValueError, KeyError, TypeError):
             print(f"MQTT: ignoring unexpected message on {msg.topic}: {msg.payload[:100]!r}")
             return
+        key = (msg.topic, event.get("t"), peak)
+        with self._seen_lock:
+            if key in self._seen:
+                return   # the other broker's copy, already handled
+            self._seen.append(key)
+        gyro = event.get("peak_gyro")
+        gyro = float(gyro) if gyro is not None else None
+        if msg.topic == config.IMU_REJECTED_TOPIC:
+            self.last_rejected = Swing(arrival=arrival, peak=peak, peak_gyro=gyro,
+                                       failed=list(event.get("failed", [])))
+            return
+        if event.get("swing") != 1:
+            return
+        self.last_swing_via = via
         delay_ms = None
         try:
             delay_ms = (wall - float(event["t"])) * 1000   # board clock -> laptop clock
         except (KeyError, TypeError, ValueError):
             pass
         self.swing_count += 1
-        self.last_swing_info = {"peak": peak, "peak_gyro": event.get("peak_gyro"),
+        self.last_swing_info = {"peak": peak, "peak_gyro": gyro, "via": via,
                                 "delay_ms": delay_ms, "count": self.swing_count, "arrival": arrival}
-        gyro = event.get("peak_gyro")
-        self.last_swing = Swing(arrival=arrival, peak=peak,      # last: the game acts on this
-                                peak_gyro=float(gyro) if gyro is not None else None)
+        self.last_swing = Swing(arrival=arrival, peak=peak, peak_gyro=gyro)   # last: the game acts on this
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         if self.connected and not self._stopping:

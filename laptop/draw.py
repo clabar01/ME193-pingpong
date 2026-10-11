@@ -95,7 +95,8 @@ class Renderer:
             lines.append((f"swing #{info['count']}: {info['peak']:.2f} g{gyro}",
                           CALIBRATE if flash else TEXT))
             if info["delay_ms"] is not None and -2000 < info["delay_ms"] < 10000:
-                lines.append((f"delay {info['delay_ms']:.0f} ms (board -> laptop)", TEXT))
+                via = f" via {info['via']}" if info.get("via") else ""
+                lines.append((f"delay {info['delay_ms']:.0f} ms (board -> laptop{via})", TEXT))
         elif age is not None:
             lines.append(("swing (Space)", CALIBRATE if flash else TEXT))
         elif info["mode"] != "always":
@@ -284,7 +285,9 @@ class Renderer:
         h = self.screen.get_height()
         message = src.message or camera_error
         if message:
-            self._center_text(message, self.font, CALIBRATE, h * 0.72)
+            for i, line in enumerate(message.split("\n")):   # 2nd line: e.g. why calibration was rejected
+                self._center_text(line, self.font if i == 0 else self.small_font, CALIBRATE,
+                                  h * 0.72 + i * 34)
         elif not src.has_hand:
             # Small fixed warning (top center): paddle frozen until the wrist is seen again
             text = self.small_font.render("  no hand: wrist not tracked  ", True, (255, 255, 255))
