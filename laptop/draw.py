@@ -26,6 +26,9 @@ HIT_RING = (255, 210, 160)
 TEXT = (230, 230, 230)
 DIM_TEXT = (150, 160, 180)
 CALIBRATE = (255, 210, 90)
+ZONE_OFF = (255, 170, 60)     # target zone, paddle not in it yet
+ZONE_ON = (90, 230, 120)      # target zone, paddle center inside: in position
+TARGET_LOCK_S = 0.25          # "lock-on" animation when the target locks (ball bounced)
 STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
                 gs.MISS: (255, 110, 110), gs.POINT: (120, 220, 140)}
 
@@ -43,6 +46,8 @@ class Renderer:
         self.big_font = pygame.font.SysFont(None, 96)
         self.reason_font = pygame.font.SysFont(None, 64)
         self.small_font = pygame.font.SysFont(None, 26)
+        self._shown_target = None    # target as drawn: glides toward the real one
+        self._lock_time = None       # game_time the current target locked
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
              mqtt_status=None, swing_info=None):
@@ -90,6 +95,10 @@ class Renderer:
         modes = {"imu": "IMU swings", "imu+keyboard": "IMU or Space = swing",
                  "always": "--no-imu: every ball swung"}
         lines = [(modes.get(info["mode"], info["mode"]), DIM_TEXT)]
+        if info["mode"] != "always":
+            before, after = game.swing_window
+            kind = "fast path" if game.swing_window == config.SWING_WINDOW_FAST else "slow path: hivemq"
+            lines.append((f"swing window -{before * 1000:.0f}/+{after * 1000:.0f} ms ({kind})", DIM_TEXT))
         if info["peak"] is not None:
             gyro = f"  {info['peak_gyro']:.0f} dps" if info["peak_gyro"] is not None else ""
             lines.append((f"swing #{info['count']}: {info['peak']:.2f} g{gyro}",
@@ -117,9 +126,9 @@ class Renderer:
         else:
             connected, detail = status
             if connected:
-                text, color = f"MQTT: connected  |  {detail}", STATE_COLORS[gs.PLAYING]
+                text, color = f"MQTT hivemq: connected  |  {detail}", STATE_COLORS[gs.PLAYING]
             else:
-                text, color = f"MQTT: disconnected (retrying)  |  {detail}", STATE_COLORS[gs.MISS]
+                text, color = f"MQTT hivemq: disconnected (retrying)  |  {detail}", STATE_COLORS[gs.MISS]
         surf = self.small_font.render(text, True, color)
         self.screen.blit(surf, (20, self.screen.get_height() - surf.get_height() - 12))
 
@@ -132,10 +141,14 @@ class Renderer:
         elif game.state == gs.MISS:
             self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.24)
             if game.miss_text:   # why: big enough to read mid-rally
-                panel = pygame.Surface((self.screen.get_width(), 70), pygame.SRCALPHA)
+                lines = game.miss_text.split("\n")   # 2nd line: details (e.g. which way)
+                panel = pygame.Surface((self.screen.get_width(), 70 + 40 * (len(lines) - 1)),
+                                       pygame.SRCALPHA)
                 panel.fill((10, 14, 24, 190))
                 self.screen.blit(panel, (0, h * 0.36 - 35))
-                self._center_text(game.miss_text, self.reason_font, CALIBRATE, h * 0.36)
+                for i, line in enumerate(lines):
+                    self._center_text(line, self.reason_font if i == 0 else self.font, CALIBRATE,
+                                      h * 0.36 + (0 if i == 0 else 22 + 38 * i))
         elif game.state == gs.POINT:
             self._center_text("POINT!  opponent missed", self.font, STATE_COLORS[gs.POINT], h * 0.30)
             self._center_text("your streak continues", self.small_font, DIM_TEXT, h * 0.30 + 32)
@@ -168,6 +181,7 @@ class Renderer:
         self._draw_net()
         if ball_visible and not beyond_net:
             self._draw_ball(game)
+        self._draw_target(game)
         self._draw_my_paddle(game)
 
     def _draw_net(self):
@@ -236,15 +250,65 @@ class Renderer:
         p = game.paddle
         z = config.MY_HIT_Z
         self._draw_paddle_shape(p.x, p.y, z, PADDLE, 50)   # very see-through: never hide the ball
-        # Hit zone for this level: the ball's center must be inside this ring at contact
-        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + game.hit_tolerance
-        pygame.draw.circle(self.screen, HIT_RING, P(p.x, p.y, z), view3d.size(reach, z), 1)
+        # The paddle's center: the point that must be inside the target box
+        cx, cy = P(p.x, p.y, z)
+        pygame.draw.circle(self.screen, HIT_RING, (cx, cy), 5)
+        pygame.draw.line(self.screen, HIT_RING, (cx - 12, cy), (cx + 12, cy), 1)
+        pygame.draw.line(self.screen, HIT_RING, (cx, cy - 12), (cx, cy + 12), 1)
+
+    def _draw_target(self, game: gs.GameState):
+        """Where the ball will cross my hitting plane, with the level's hit zone
+        around it: get the paddle's center inside the box. Faint while only
+        predicted, solid with a lock-on ring once the ball bounced on my side;
+        green when the paddle is in position. On levels that ignore height the
+        box is a full-height band."""
+        if game.target is None or game.state != gs.PLAYING:
+            self._shown_target, self._lock_time = None, None
+            return
+        tx, ty = game.target
+        if self._shown_target is None:
+            self._shown_target = (tx, ty)
+        else:   # glide to a corrected prediction instead of jumping
+            sx0, sy0 = self._shown_target
+            self._shown_target = (sx0 + 0.35 * (tx - sx0), sy0 + 0.35 * (ty - sy0))
+        tx, ty = self._shown_target
+        if game.target_locked and self._lock_time is None:
+            self._lock_time = game.game_time
+        locked = self._lock_time is not None
+
+        z = config.MY_HIT_Z
+        rx, ry = game.zone
+        top = ty + ry if ry is not None else config.PADDLE_Y_MAX_M + config.PADDLE_RADIUS_M
+        bottom = ty - ry if ry is not None else config.PADDLE_Y_MIN_M - config.PADDLE_RADIUS_M
+        x0, y0 = P(tx - rx, top, z)
+        x1, y1 = P(tx + rx, bottom, z)
+        box = pygame.Rect(x0, y0, x1 - x0, y1 - y0)
+        on = gs.in_zone(tx, ty, game.paddle, game.zone)
+        color = ZONE_ON if on else ZONE_OFF
+        layer = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        pygame.draw.rect(layer, (*color, 55 if locked else 22), box, border_radius=8)
+        pygame.draw.rect(layer, (*color, 255 if locked else 110), box, 3 if locked else 1, border_radius=8)
+        # Crosshair on the exact crossing spot
+        cx, cy = P(tx, ty, z)
+        r = view3d.size(config.BALL_RADIUS_M, z)
+        alpha = 255 if locked else 130
+        pygame.draw.circle(layer, (*color, alpha), (cx, cy), r + 3, 2)
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            pygame.draw.line(layer, (*color, alpha), (cx + dx * (r + 6), cy + dy * (r + 6)),
+                             (cx + dx * (r + 18), cy + dy * (r + 18)), 2)
+        if locked:   # lock-on: a ring closing in on the box for TARGET_LOCK_S
+            age = game.game_time - self._lock_time
+            if age < TARGET_LOCK_S:
+                grow = int((1 - age / TARGET_LOCK_S) * 60)
+                pygame.draw.rect(layer, (*color, 200), box.inflate(grow, grow), 2, border_radius=10)
+        self.screen.blit(layer, (0, 0))
 
     def _draw_hud(self, game: gs.GameState):
         state = self.font.render(game.state, True, STATE_COLORS[game.state])
         self.screen.blit(state, (20, 16))
         level = config.LEVELS[game.level]
-        lvl = self.small_font.render(f"Level {game.level}: {level['name']}", True, DIM_TEXT)
+        checks = "left/right only" if game.hit_tolerance[1] is None else "left/right + height"
+        lvl = self.small_font.render(f"Level {game.level}: {level['name']} ({checks})", True, DIM_TEXT)
         self.screen.blit(lvl, (20, 52))
 
         w = self.screen.get_width()
@@ -288,11 +352,18 @@ class Renderer:
             for i, line in enumerate(message.split("\n")):   # 2nd line: e.g. why calibration was rejected
                 self._center_text(line, self.font if i == 0 else self.small_font, CALIBRATE,
                                   h * 0.72 + i * 34)
-        elif not src.has_hand:
-            # Small fixed warning (top center): paddle frozen until the wrist is seen again
-            text = self.small_font.render("  no hand: wrist not tracked  ", True, (255, 255, 255))
+        elif src.kind == "camera":
+            # Small fixed badge (top center): how the hand is being found
+            labels = {"wrist": "tracking: wrist", "hand": "tracking: fallback (knuckles)",
+                      "elbow": "tracking: fallback (elbow)", "hold": "tracking: holding last position",
+                      "lost": "tracking: LOST (paddle frozen)"}
+            colors = {"wrist": (40, 140, 70), "hand": (170, 120, 20), "elbow": (170, 90, 20),
+                      "hold": (170, 90, 20), "lost": (200, 50, 60)}
+            text = self.small_font.render(f"  {labels.get(src.tracking, src.tracking)}  ", True,
+                                          (255, 255, 255))
             box = text.get_rect(center=(self.screen.get_width() / 2, 22))
-            pygame.draw.rect(self.screen, (200, 50, 60), box.inflate(8, 8), border_radius=6)
+            pygame.draw.rect(self.screen, colors.get(src.tracking, (90, 90, 90)), box.inflate(8, 8),
+                             border_radius=6)
             self.screen.blit(text, box)
 
     def _center_text(self, text, font, color, y):

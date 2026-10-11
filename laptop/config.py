@@ -21,6 +21,19 @@ GAME_PUBLISH_HZ = 10                 # game state messages per second on GAME_TO
 LOCAL_BROKER_ENABLED = True
 LOCAL_BROKER_HOST = None
 LOCAL_BROKER_PORT = 1883
+# The local broker is on the same WiFi, so its connection can check itself
+# often: with a 5 s keepalive a dead link is noticed (and reconnected) within
+# ~8 s instead of ~45 s. Reconnecting is automatic (MQTT_RECONNECT_*).
+LOCAL_KEEPALIVE_S = 5
+# Health check + delay measurement: every PING_PERIOD_S the game sends a tiny
+# message to itself through each broker and times the echo (round trip). A
+# local broker that is "connected" but hasn't echoed for LOCAL_PING_TIMEOUT_S
+# counts as down: game state and the swing window switch to hivemq until it
+# answers again. The topic is outside ME193/CeciLaBarge/#, so the board's
+# bridge doesn't copy it to hivemq.
+PING_TOPIC = "ME193/ping/CeciLaBarge"
+PING_PERIOD_S = 1.0
+LOCAL_PING_TIMEOUT_S = 2.5
 # At startup the record is read from SCORE_TOPIC's retained value; if none
 # arrives this long after subscribing, the topic counts as empty.
 RECORD_LOAD_WAIT_S = 2.0
@@ -39,26 +52,34 @@ WINDOW_HEIGHT = 720
 FPS = 60
 
 MAX_DT = 1 / 20     # cap one frame's time step (s) so a hiccup can't teleport the ball
+PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever the frame rate
 
 # ---------------------------------------------------------------- Levels
 # The AprilTag ID held up at the start selects the level (or keys 0-2 on the
 # WAITING screen).
 #   ball_speed:    m/s along the table for the opponent's shots (serve/returns)
-#   hit_tolerance: m of slack around "paddle touches ball" (bigger = easier):
-#                  a hit needs ball-to-paddle distance <= paddle radius + ball
-#                  radius + this. Used with the keyboard paddle.
-#   hit_tolerance_camera: the same for the camera paddle, about double: wrist
+#   hit_tolerance: (left/right, up/down) slack in m around "paddle touches
+#                  ball" (bigger = easier). A hit needs the ball's center within
+#                  paddle radius + ball radius + this of the paddle's center,
+#                  checked SEPARATELY across (x) and in height (y): a box, not
+#                  a circle. None for up/down = height is not checked at all.
+#                  Used with the keyboard paddle.
+#   hit_tolerance_camera: the same for the camera paddle, wider: wrist
 #                  tracking is noisier and laggier than arrow keys.
+#   Beginner: left/right only, generous. Club: both, loose. Pro: both, tight.
+#   Height tolerances are smaller than left/right ones because balls reach my
+#   plane within a narrow height band per level (Beginner 0.36-0.66 m, Club
+#   0.27-0.46, Pro 0.26-0.36): a looser height check would never fail.
 #   opponent:      the AI (see OPPONENT below): reaction delay (s) before it
 #                  starts moving, max speed (m/s) across the table, aim error
 #                  (m, random offset in where it thinks the ball will come)
 #                  Miss rates in the comments: simulated over 400 of my returns.
 LEVELS = {
-    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": 0.08, "hit_tolerance_camera": 0.16,
+    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": (0.12, None), "hit_tolerance_camera": (0.20, None),
         "opponent": {"reaction_s": 0.28, "max_speed": 1.4, "aim_error_m": 0.10}},   # misses ~20%
-    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": 0.05, "hit_tolerance_camera": 0.10,
+    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": (0.07, 0.05), "hit_tolerance_camera": (0.12, 0.08),
         "opponent": {"reaction_s": 0.22, "max_speed": 1.8, "aim_error_m": 0.07}},   # misses ~9%
-    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": 0.025, "hit_tolerance_camera": 0.05,
+    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": (0.03, 0.02), "hit_tolerance_camera": (0.05, 0.03),
         "opponent": {"reaction_s": 0.16, "max_speed": 2.2, "aim_error_m": 0.06}},   # misses ~3%
 }
 DEFAULT_LEVEL = 0   # used when starting from the keyboard (no tag)
@@ -99,8 +120,13 @@ VIEW_HORIZON_Y = 220     # screen y of the horizon (where the camera looks)
 # The paddle moves in my hitting plane (z = MY_HIT_Z): x across, y = height.
 PADDLE_RADIUS_M = 0.08
 PADDLE_X_RANGE_M = 0.65      # x from -this to +this (keeps the paddle on screen)
-PADDLE_Y_MIN_M = 0.05        # lowest / highest paddle height above the table
-PADDLE_Y_MAX_M = 0.75
+PADDLE_Y_MIN_M = 0.15        # lowest / highest paddle height above the table (balls
+PADDLE_Y_MAX_M = 0.75        # reach my plane at 0.26-0.66 m on all levels)
+# Target marker: where the ball will cross my hitting plane. A clear marker
+# appears when the ball bounces on my side; that is only 0.13-0.42 s before
+# contact, so with TARGET_EARLY a faint predicted marker is shown from the
+# moment the opponent hits the ball.
+TARGET_EARLY = True
 PADDLE_KEY_SPEED = 1.2       # m/s with the arrow keys (left/right/up/down)
 
 # ---------------------------------------------------------------- Opponent
@@ -116,24 +142,31 @@ CAMERA_HEIGHT = 480
 POSE_MODEL_PATH = "assets/models/pose_landmarker_lite.task"   # relative to the repo root
 TRACK_WRIST = "right"        # "right" or "left": which of YOUR wrists moves the paddle
 # A wrist counts as detected only if MediaPipe is at least this confident it's
-# visible (0..1). Below it the paddle freezes and "no hand" is shown.
+# visible (0..1). The real paddle in the hand often hides the wrist, so below
+# it the hand position is estimated from other landmarks (pose_input.py):
+#   1. index/pinky knuckles (if visible), or
+#   2. the elbow plus the last seen elbow->wrist offset (the forearm).
+# Each fallback adds the offset to the wrist measured the last time the wrist
+# itself was visible, so switching sources doesn't make the paddle jump.
 MIN_WRIST_VISIBILITY = 0.5
+FALLBACK_MIN_VISIBILITY = 0.5   # same test for the knuckles / elbow
+# Nothing usable at all: the paddle holds its last position this long (still
+# counts as tracked), then tracking is "lost" (paddle frozen, "no hand").
+TRACK_HOLD_S = 0.3
 # Smoothing (exponential moving average) of the paddle position:
 #   paddle += SMOOTHING_ALPHA * (target - paddle)   every frame
 # 1.0 = no smoothing (jittery but instant); smaller = smoother but laggier.
 SMOOTHING_ALPHA = 0.35
-# Calibration at startup (press C on the waiting screen to redo it):
-# reach to your left edge, hold for the countdown, then the same on the right.
+# Calibration at startup (press C on the waiting screen to redo it): reach to
+# your left edge, hold for the countdown, then right, then high, then low.
 CALIB_COUNTDOWN_S = 3.0      # time to get into position before each sample
 CALIB_SAMPLE_S = 0.5         # wrist x is averaged over this final stretch
 CALIB_MIN_SPAN = 0.35        # left and right must differ by at least this much of the frame
                              # width; narrower = tiny wrist moves cross the whole table
+CALIB_MIN_SPAN_Y = 0.20      # high and low: at least this much of the frame height
 CAMERA_PREVIEW_WIDTH = 320   # size of the camera view drawn in the game window
-# Paddle height from the wrist's height in the camera image (0 = top, 1 = bottom),
-# no calibration: wrist at WRIST_Y_HIGH -> paddle at PADDLE_Y_MAX_M, wrist at
-# WRIST_Y_LOW -> paddle at PADDLE_Y_MIN_M, linear in between (clamped).
-WRIST_Y_HIGH = 0.25
-WRIST_Y_LOW = 0.75
+# Paddle height: wrist at the calibrated HIGH spot -> PADDLE_Y_MAX_M, at the
+# LOW spot -> PADDLE_Y_MIN_M, linear in between (clamped).
 
 # ---------------------------------------------------------------- AprilTags (apriltag_input.py)
 # Detected with OpenCV's aruco module, as in the AprilTag parking project.
@@ -150,14 +183,17 @@ TAG_HOLD_S = 1.0
 TAG_DROPOUT_S = 0.25
 
 # ---------------------------------------------------------------- Swing timing (is_hit)
-# Swing events from the paddle IMU arrive late: measured board -> laptop delay
-# 110-485 ms, plus up to 60 ms of detection. So a swing is matched by its
-# ARRIVAL time on the laptop, with a window that reaches mostly AFTER the
-# moment the ball reaches the paddle line ("contact"):
-#     contact - SWING_WINDOW_BEFORE_S  <=  swing arrival  <=  contact + SWING_WINDOW_AFTER_S
-SWING_WINDOW_BEFORE_S = 0.15   # a swing may arrive this much before contact
-SWING_WINDOW_AFTER_S = 0.60    # ...or this much after (485 ms worst delay + detection; a test
-                               # swing sent 400 ms late arrived at 548 ms, so 0.55 was too tight)
+# A swing is matched by its ARRIVAL time on the laptop, in a window around the
+# moment the ball reaches my hitting plane ("contact"):
+#     contact - before  <=  swing arrival  <=  contact + after
+# given as (before, after) in seconds. Which window applies is decided at
+# contact, from how swings are arriving right then:
+#   FAST: swings via the board's local broker (measured 20 ms median on
+#         29BCNet), or Space / --no-imu (instant). Centered on contact.
+#   SLOW: IMU swings via broker.hivemq.com when the local broker is down
+#         (measured 110-485 ms on campus, 0.7-4 s on 29BCNet): shifted late.
+SWING_WINDOW_FAST = (0.35, 0.35)
+SWING_WINDOW_SLOW = (0.15, 0.60)
 # The paddle counts as on the ball if it was there at ANY moment from this
 # long before contact up to contact: swinging moves the tracked wrist right
 # at contact, so the position just before the swing is the one that counts.

@@ -87,30 +87,40 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #      my side of the table, and then reaches my hitting plane: an invisible
 #      wall just behind my end of the table where my paddle moves. "Contact"
 #      is the moment the ball crosses that plane. Nothing is judged before.
+#      (To help aim, the screen marks where the ball will cross that plane:
+#      a clear target once it bounces on my side, and a faint predicted one
+#      from the moment the opponent hits it.)
 #
 #   2. The paddle was in the right place, just before or at contact. The
-#      camera tracks the player's wrist, which moves the paddle left/right and
-#      up/down in the hitting plane. The paddle must overlap the spot where
-#      the ball crosses the hitting plane: the distance between that spot and
-#      the paddle's center must be at most paddle radius + ball radius + a
-#      tolerance that depends on the level (generous on Beginner, tight on
-#      Pro; about double with the camera paddle, because wrist tracking is
-#      noisier than arrow keys). It is enough for this to be true at ANY
-#      moment from PADDLE_LOOKBACK_S (0.2 s) before contact up to contact:
-#      swinging the real paddle moves the tracked wrist right at contact, so
-#      the position the player held just before the swing must count. If the
-#      paddle was never there in that time, it's a miss right away. Moving the
-#      paddle there after contact doesn't help.
+#      camera tracks the player's hand, which moves the paddle left/right and
+#      up/down in the hitting plane. Left/right and up/down are checked
+#      SEPARATELY, so the hit zone is a box around the paddle's center:
+#        left/right: |ball x - paddle x| <= paddle radius + ball radius + x tolerance
+#        up/down:    |ball y - paddle y| <= paddle radius + ball radius + y tolerance
+#      The tolerances depend on the level (config.LEVELS, hit_tolerance):
+#      Beginner checks only left/right (height is ignored) with a generous
+#      tolerance; Club checks both loosely; Pro checks both tightly. With the
+#      camera paddle they are wider than with arrow keys, because tracking a
+#      hand is noisier. It is enough for this to be true at ANY moment from
+#      PADDLE_LOOKBACK_S (0.2 s) before contact up to contact: swinging the
+#      real paddle moves the tracked hand right at contact, so the position the
+#      player held just before the swing must count. If the paddle was never
+#      there in that time, it's a miss right away. Moving the paddle there
+#      after contact doesn't help.
 #
 #   3. The player really swung, at the right time. The accelerometer and
 #      gyroscope on the real paddle send a "swing" message (the UNO Q only
 #      sends one for a move that is both hard enough and turning fast enough).
-#      These messages travel over the internet, so they arrive on the laptop
-#      late: we measured 110 to 485 ms. So the swing is judged by when it
-#      ARRIVES, and the timing window is lopsided: a swing may arrive up to
-#      SWING_WINDOW_BEFORE_S (0.15 s) before contact, or up to
-#      SWING_WINDOW_AFTER_S (0.6 s) after it. Each swing can only be used
-#      for one hit.
+#      The swing is judged by when it ARRIVES on the laptop, in a timing
+#      window around contact: from "before" seconds before contact to "after"
+#      seconds after it. Which window is used is decided at contact:
+#        - SWING_WINDOW_FAST (0.35 s before to 0.35 s after) when swings come
+#          through the board's own MQTT broker on the local WiFi (they arrive
+#          about 20 ms after the swing), or from Space / --no-imu;
+#        - SWING_WINDOW_SLOW (0.15 s before to 0.6 s after) when the local
+#          broker is down and swings come over the internet (broker.hivemq.com,
+#          0.1 to 0.5 s late or worse), so the window is shifted late.
+#      Each swing can only be used for one hit.
 #
 # Because a swing can arrive after contact, the decision may have to wait.
 # While it waits, the ball presses into the paddle and slows to a stop (it
@@ -121,21 +131,41 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #
 # Why this is fair: a swing alone never scores (the paddle must have been on
 # the ball's path at contact time), and the paddle alone never scores (there
-# must be a real swing close to contact). An occasional false swing from the sensor only
-# matters if it lands in that short window while the paddle is already on
-# the ball.
-#
-# With the keyboard (Space = swing) or --no-imu (every ball counts as swung),
-# the swing arrives instantly, so check 3 is decided at contact.
+# must be a real swing close to contact). An occasional false swing from the
+# sensor only matters if it lands in that short window while the paddle is
+# already on the ball.
 # =============================================================================
-def is_hit(ball: Ball, paddles: list, tolerance: float, contact_time: Optional[float],
+def zone_reach(tolerance) -> tuple:
+    """(left/right, up/down) half-sizes of the hit zone in m, from a level's
+    (x, y) tolerance; up/down is None when height isn't checked."""
+    base = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M
+    tol_x, tol_y = tolerance
+    return base + tol_x, (None if tol_y is None else base + tol_y)
+
+
+def zone_miss(ball_x: float, ball_y: float, paddle: "Paddle", reach: tuple) -> tuple:
+    """How far the paddle's center was OUTSIDE the zone, per axis, in m:
+    (off_x, off_y), 0 = inside on that axis; off_y is None if height isn't
+    checked. Both 0 (or off_y None) = the paddle is on the ball."""
+    off_x = max(0.0, abs(ball_x - paddle.x) - reach[0])
+    off_y = None if reach[1] is None else max(0.0, abs(ball_y - paddle.y) - reach[1])
+    return off_x, off_y
+
+
+def in_zone(ball_x: float, ball_y: float, paddle: "Paddle", reach: tuple) -> bool:
+    off_x, off_y = zone_miss(ball_x, ball_y, paddle, reach)
+    return off_x == 0 and not off_y
+
+
+def is_hit(ball: Ball, paddles: list, reach: tuple, window: tuple, contact_time: Optional[float],
            swing: Optional[Swing], now: float) -> Optional[bool]:
     """Apply the hit rule above.
 
     ball: where it crossed my hitting plane (at contact_time).
     paddles: the paddle's positions from PADDLE_LOOKBACK_S before contact up
              to contact (one per frame).
-    tolerance: the level's hit tolerance (m) for this paddle input.
+    reach: the hit zone's half-sizes (zone_reach() of the level's tolerance).
+    window: (before, after) of the swing timing window, in s.
     swing: the latest unused swing, or None.
     Returns True (hit), False (miss), or None (not decided yet: keep waiting).
     """
@@ -144,18 +174,27 @@ def is_hit(ball: Ball, paddles: list, tolerance: float, contact_time: Optional[f
         return None
 
     # 2. Paddle on the ball's crossing spot at some moment in the look-back.
-    reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + tolerance
-    if not any(math.hypot(ball.x - p.x, ball.y - p.y) <= reach for p in paddles):
+    if not any(in_zone(ball.x, ball.y, p, reach) for p in paddles):
         return False
 
     # 3. A swing that arrived inside the timing window around contact.
-    opens = contact_time - config.SWING_WINDOW_BEFORE_S
-    closes = contact_time + config.SWING_WINDOW_AFTER_S
+    opens = contact_time - window[0]
+    closes = contact_time + window[1]
     if swing is not None and opens <= swing.arrival <= closes:
         return True
     if now > closes:
         return False   # window closed without a swing
     return None        # window still open: wait
+
+
+def off_text(off_x: float, dx: float, off_y: Optional[float], dy: float) -> str:
+    """e.g. "paddle 12 cm too far LEFT, 5 cm too LOW" (dx, dy = paddle - ball)."""
+    parts = []
+    if off_x > 0:
+        parts.append(f"{off_x * 100:.0f} cm too far {'RIGHT' if dx > 0 else 'LEFT'}")
+    if off_y:
+        parts.append(f"{off_y * 100:.0f} cm too {'HIGH' if dy > 0 else 'LOW'}")
+    return "paddle " + ", ".join(parts) if parts else "paddle on the ball"
 
 
 def rejected_text(rej: Swing, contact: float) -> str:
@@ -249,14 +288,23 @@ def step_ball(ball: Ball, dt: float) -> bool:
     return False
 
 
-def predict_crossing(ball: Ball, plane_z: float, dt: float = 1 / 240) -> Optional[float]:
+def predict_crossing(ball: Ball, plane_z: float, dt: Optional[float] = None) -> Optional[float]:
     """Simulate ahead: the ball's x when it crosses z = plane_z (or None)."""
+    spot = predict_crossing_xy(ball, plane_z, dt)
+    return None if spot is None else spot[0]
+
+
+def predict_crossing_xy(ball: Ball, plane_z: float, dt: Optional[float] = None) -> Optional[tuple]:
+    """Simulate ahead (same physics, bounces included): (x, y) where the ball
+    crosses z = plane_z, or None if it never does."""
+    dt = dt or config.PHYSICS_DT
     b = Ball(ball.x, ball.y, ball.z, ball.vx, ball.vy, ball.vz)
     for _ in range(int(5 / dt)):
-        before = b.z
+        bx, by, before = b.x, b.y, b.z
         step_ball(b, dt)
         if (before - plane_z) * (b.z - plane_z) <= 0 and before != b.z:
-            return b.x
+            f = (plane_z - before) / (b.z - before)   # interpolate within the step
+            return bx + f * (b.x - bx), by + f * (b.y - by)
         if b.y < -1.0:
             return None
     return None
@@ -274,6 +322,15 @@ class GameState:
         self.opponent = Opponent()
         self.game_time = 0.0     # seconds of play (drives the opponent)
         self.camera_mode = False   # camera paddle: use the level's hit_tolerance_camera
+        # Swing timing window (before, after) for the NEXT contact; game.py sets
+        # it every frame from how swings are arriving (local broker or not).
+        self.swing_window = config.SWING_WINDOW_FAST
+        self._window = self.swing_window   # the window of the current contact
+        # Where the ball will cross my hitting plane: (x, y), or None. Set when
+        # the opponent hits (predicted) and again when it bounces on my side
+        # (target_locked = True).
+        self.target = None
+        self.target_locked = False
         self._paddle_history = deque()   # (time, Paddle) for the hit rule's look-back
 
         # Rally bookkeeping
@@ -295,7 +352,8 @@ class GameState:
         self.last_return_factor = None
 
         # Diagnostics: why the last miss happened, and one record per ball
-        self.tracking_ok = True       # set by game.py: is the camera seeing my wrist?
+        self.tracking_ok = True       # set by game.py: is the hand tracked (else "lost")?
+        self.tracking = "keys"        # set by game.py: wrist / hand / elbow / hold / lost / keys
         self.miss_text = None         # e.g. "OUT OF ZONE  12 cm off" (shown during MISS)
         self.ball_results = []        # finished balls, drained by game.py (CSV log)
         self._contact_info = None     # distances etc. measured at contact
@@ -308,16 +366,22 @@ class GameState:
         return config.LEVELS[self.level]
 
     @property
-    def hit_tolerance(self) -> float:
+    def hit_tolerance(self) -> tuple:
+        """(left/right, up/down) tolerance in m for this level and paddle input."""
         key = "hit_tolerance_camera" if self.camera_mode else "hit_tolerance"
         return self.params[key]
+
+    @property
+    def zone(self) -> tuple:
+        """Hit zone half-sizes (left/right, up/down or None) in m (see the hit rule)."""
+        return zone_reach(self.hit_tolerance)
 
     @property
     def hold_progress(self) -> float:
         """0..1: how much of the post-contact swing window has passed (for drawing)."""
         if not self.holding or self.contact_time is None or self._now is None:
             return 0.0
-        return min(1.0, (self._now - self.contact_time) / config.SWING_WINDOW_AFTER_S)
+        return min(1.0, (self._now - self.contact_time) / self._window[1])
 
     def set_level(self, level: int):
         """Pick a level (only while WAITING)."""
@@ -396,38 +460,50 @@ class GameState:
             b.y += b.vy * dt
             b.z = max(b.z + b.vz * dt, config.MY_HIT_Z - config.HOLD_MAX_SINK_M)
         else:
-            z_before = self.ball.z
-            if step_ball(self.ball, dt):
-                events.append(EVENT_BOUNCE)
-                self.last_bounce = (self.ball.x, self.ball.z, self.game_time)
-                if self.ball.z < config.TABLE_LENGTH / 2:
-                    self.bounced_my_side = True
-                else:
-                    self.bounced_opp_side = True
-            if self.coming_to_me:
-                # Check 1: did the ball cross my hitting plane after bouncing on my side?
-                if z_before > config.MY_HIT_Z >= self.ball.z and self.bounced_my_side:
-                    self._start_contact(now)
-                elif self.ball.y < -0.5:   # fell off without a proper bounce
-                    self._contact_info = None
-                    self.miss_text = "NO CONTACT"
-                    self.ball_results.append(self._record("miss", REASON_NO_CONTACT, None))
-                    events += self._my_miss()
-            else:
-                if z_before < config.OPP_HIT_Z <= self.ball.z:
+            # Physics in small fixed substeps (PHYSICS_DT), so bounces and the
+            # crossing spot don't depend on the frame rate, and match the
+            # target prediction (predict_crossing_xy uses the same step).
+            n = max(1, math.ceil(dt / config.PHYSICS_DT - 1e-9))
+            for _ in range(n):
+                b = self.ball
+                x_before, y_before, z_before = b.x, b.y, b.z
+                if step_ball(b, dt / n):
+                    events.append(EVENT_BOUNCE)
+                    self.last_bounce = (b.x, b.z, self.game_time)
+                    if b.z < config.TABLE_LENGTH / 2:
+                        self.bounced_my_side = True
+                        if self.coming_to_me:   # lock the target: the ball is about to arrive
+                            self.target = predict_crossing_xy(b, config.MY_HIT_Z)
+                            self.target_locked = self.target is not None
+                    else:
+                        self.bounced_opp_side = True
+                if self.coming_to_me:
+                    # Check 1: did the ball cross my hitting plane after bouncing on my side?
+                    if z_before > config.MY_HIT_Z >= b.z and self.bounced_my_side:
+                        f = (config.MY_HIT_Z - z_before) / (b.z - z_before)   # exact crossing spot
+                        self._start_contact(now, x_before + f * (b.x - x_before),
+                                            y_before + f * (b.y - y_before))
+                        break
+                    if b.y < -0.5:   # fell off without a proper bounce
+                        self._contact_info = None
+                        self.miss_text = "NO CONTACT"
+                        self.ball_results.append(self._record("miss", REASON_NO_CONTACT, None))
+                        events += self._my_miss()
+                        break
+                elif z_before < config.OPP_HIT_Z <= b.z or b.y < -0.5:
                     events += self._opponent_turn()
-                elif self.ball.y < -0.5:
-                    events += self._opponent_turn()
+                    break
 
         if not self.holding:
             return events
 
-        verdict = is_hit(self._contact_ball, self._contact_paddles, self.hit_tolerance,
+        verdict = is_hit(self._contact_ball, self._contact_paddles, self.zone, self._window,
                          self.contact_time, swing, now)
         if verdict is None:
             return events                     # keep waiting for a late swing
         self.holding = False
         self.contact_time = None
+        self.target = None
         if verdict:
             self._used_swing = swing.arrival
             self.last_swing_offset = swing.arrival - self._contact_time_used
@@ -447,18 +523,30 @@ class GameState:
         return events
 
     # ------------------------------------------------------------ rally steps
-    def _start_contact(self, now: float):
+    def _start_contact(self, now: float, x: float, y: float):
+        """The ball crossed my hitting plane at (x, y) during this frame."""
         self.contact_time = self._contact_time_used = now
         b = self.ball
-        self._contact_ball = Ball(b.x, b.y, b.z, b.vx, b.vy, b.vz)
+        self._contact_ball = Ball(x, y, config.MY_HIT_Z, b.vx, b.vy, b.vz)
+        b = self._contact_ball
+        self._window = self.swing_window   # the timing window is fixed at contact
         # Paddle positions from PADDLE_LOOKBACK_S before contact up to now (contact)
         self._contact_paddles = [p for t, p in self._paddle_history
                                  if t >= now - config.PADDLE_LOOKBACK_S]
-        # Diagnostics: closest the paddle got to the crossing spot in the look-back
-        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + self.hit_tolerance
-        dist = min(math.hypot(b.x - p.x, b.y - p.y) for p in self._contact_paddles)
-        self._contact_info = {"time": now, "distance_m": dist, "off_by_m": dist - reach,
-                              "tolerance_m": self.hit_tolerance, "tracking_ok": self.tracking_ok}
+        # Diagnostics: the paddle position in the look-back that came closest
+        # to the zone, split into left/right and up/down.
+        reach = self.zone
+
+        def outside(p):
+            ox, oy = zone_miss(b.x, b.y, p, reach)
+            return math.hypot(ox, oy or 0.0)
+        best = min(self._contact_paddles, key=outside)
+        off_x, off_y = zone_miss(b.x, b.y, best, reach)
+        tol_x, tol_y = self.hit_tolerance
+        self._contact_info = {"time": now, "dx_m": best.x - b.x, "dy_m": best.y - b.y,
+                              "off_x_m": off_x, "off_y_m": off_y, "tol_x_m": tol_x, "tol_y_m": tol_y,
+                              "tracking_ok": self.tracking_ok, "tracking": self.tracking,
+                              "window": self._window}
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
@@ -491,7 +579,10 @@ class GameState:
                 random.uniform(*config.MY_LANDING_Z), self.params["ball_speed"])
             cross = predict_crossing(self.ball, config.MY_HIT_Z)
             if cross is not None and abs(cross) <= limit:
-                return
+                break
+        # Predicted crossing spot, shown faintly until the ball bounces on my side
+        self.target = predict_crossing_xy(self.ball, config.MY_HIT_Z) if config.TARGET_EARLY else None
+        self.target_locked = False
 
     def _my_return(self, factor: float):
         """Harder swing = faster AND deeper return: the speed is the level's
@@ -504,6 +595,7 @@ class GameState:
         target_z = config.OPP_LANDING_Z_SOFT + frac * (config.OPP_LANDING_Z_HARD - config.OPP_LANDING_Z_SOFT)
         target_x = random.uniform(-config.LANDING_X_MAX, config.LANDING_X_MAX)
         self._new_shot(coming_to_me=False)
+        self.target = None
         aim(b, target_x, target_z, self.params["ball_speed"] * factor)
         self.opponent.watch(b, self.game_time)
 
@@ -529,14 +621,16 @@ class GameState:
         swing-timing misses, waits LATE_SWING_WATCH_S in case a late swing shows up)."""
         info = self._contact_info
         contact = info["time"]
-        if info["off_by_m"] > 0:
-            self.miss_text = f"OUT OF ZONE  {info['off_by_m'] * 100:.0f} cm off"
+        if info["off_x_m"] > 0 or info["off_y_m"]:
+            # Second line (smaller on screen): which way, and how far, per axis
+            detail = off_text(info["off_x_m"], info["dx_m"], info["off_y_m"], info["dy_m"])
             if not info["tracking_ok"]:
-                self.miss_text += "  (no hand)"
+                detail += "  (hand lost)"
+            self.miss_text = f"OUT OF ZONE\n{detail}"
             self.ball_results.append(self._record("miss", REASON_OUT_OF_ZONE, None))
             return
-        opens = contact - config.SWING_WINDOW_BEFORE_S
-        closes = contact + config.SWING_WINDOW_AFTER_S
+        opens = contact - info["window"][0]
+        closes = contact + info["window"][1]
         rej = self._rejected
         if rej is not None and opens <= rej.arrival <= closes:
             # A move came in time but didn't pass the IMU's swing checks
@@ -560,7 +654,7 @@ class GameState:
             return
         record, watch_until = self._pending_miss
         contact = self._contact_info["time"]
-        closes = contact + config.SWING_WINDOW_AFTER_S
+        closes = contact + self._contact_info["window"][1]
         if (swing is not None and swing.arrival > closes and swing.arrival <= watch_until
                 and record["reason"] != REASON_TOO_LATE):
             offset_ms = (swing.arrival - contact) * 1000
@@ -579,17 +673,25 @@ class GameState:
         """One row for the ball log (see game.py / ball_log.py)."""
         info = self._contact_info or {}
         contact = info.get("time")
+        cm = lambda key: None if info.get(key) is None else round(info[key] * 100, 1)
+        window = info.get("window")
         return {
             "level": self.level,
             "result": result,
             "reason": reason or "",
-            "distance_cm": None if "distance_m" not in info else round(info["distance_m"] * 100, 1),
-            "off_by_cm": None if "off_by_m" not in info else round(info["off_by_m"] * 100, 1),
-            "tolerance_cm": None if "tolerance_m" not in info else round(info["tolerance_m"] * 100, 1),
+            "dx_cm": cm("dx_m"),          # paddle - ball: + = paddle to the right
+            "dy_cm": cm("dy_m"),          # + = paddle higher than the ball
+            "off_x_cm": cm("off_x_m"),    # how far outside the zone (0 = inside)
+            "off_y_cm": cm("off_y_m"),    # empty = height not checked (Beginner)
+            "tol_x_cm": cm("tol_x_m"),
+            "tol_y_cm": cm("tol_y_m"),
             "swing_offset_ms": (None if swing is None or contact is None
                                 else round((swing.arrival - contact) * 1000)),
+            "swing_window_ms": (None if window is None
+                                else f"-{window[0] * 1000:.0f}/+{window[1] * 1000:.0f}"),
             "swing_peak_g": None if swing is None else swing.peak,
             "swing_peak_dps": None if swing is None else swing.peak_gyro,
+            "tracking": info.get("tracking"),
             "hand_tracked": info.get("tracking_ok"),
             "rejected_why": "" if swing is None or not swing.failed else "; ".join(swing.failed),
         }
@@ -604,6 +706,7 @@ class GameState:
         self.state = MISS
         self.pause_timer = config.MISS_PAUSE_S
         self.streak = 0
+        self.target = None
         self.holding = False
         self.contact_time = None
         return [EVENT_MISS]

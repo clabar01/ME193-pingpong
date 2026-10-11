@@ -161,6 +161,12 @@ def main():
             paddle_src.update(dt)
             game.set_paddle(paddle_src.x, paddle_src.y)
             game.tracking_ok = paddle_src.has_hand
+            game.tracking = paddle_src.tracking
+            # Swing timing window for the next contact: centered while IMU swings
+            # come through the local broker (or there's no network delay at all),
+            # shifted late while they come over hivemq (see the hit rule).
+            slow = "imu" in swing_src.kind and mqtt is not None and not mqtt.local_ok
+            game.swing_window = config.SWING_WINDOW_SLOW if slow else config.SWING_WINDOW_FAST
             rejected = mqtt.last_rejected if mqtt is not None and swing_src.kind != "always" else None
             events += game.update(dt, now, swing_src.last_swing(now), rejected)
             while game.ball_results:
@@ -186,6 +192,8 @@ def main():
         while game.ball_results:
             log.add(game.ball_results.pop(0))
         print("\n" + log.summary())
+        if mqtt is not None:
+            print(mqtt.summary())
         log.close()
         if camera is not None:
             camera.stop()

@@ -12,9 +12,12 @@ from pathlib import Path
 import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-COLUMNS = ["time", "level", "mode", "result", "reason", "distance_cm", "off_by_cm",
-           "tolerance_cm", "swing_offset_ms", "swing_peak_g", "swing_peak_dps", "hand_tracked",
-           "rejected_why"]
+# dx/dy = paddle center - ball (cm; + = paddle right / higher), off_x/off_y = how far
+# outside the hit zone (0 = inside; off_y empty = height not checked), tol = the
+# level's tolerances, tracking = how the hand was found at contact.
+COLUMNS = ["time", "level", "mode", "result", "reason", "dx_cm", "dy_cm", "off_x_cm", "off_y_cm",
+           "tol_x_cm", "tol_y_cm", "swing_offset_ms", "swing_window_ms", "swing_peak_g",
+           "swing_peak_dps", "tracking", "hand_tracked", "rejected_why"]
 REASON_TEXT = {
     "OUT_OF_ZONE": "out of zone (paddle not on the ball)",
     "NO_SWING": "no swing",
@@ -23,6 +26,18 @@ REASON_TEXT = {
     "SWING_REJECTED": "swing rejected by the IMU checks",
     "NO_CONTACT": "ball never reached the paddle",
 }
+
+
+def position_text(r: dict) -> str:
+    """e.g. "12 cm too far left, 3 cm too low" / "on the ball" / "-"."""
+    if r.get("dx_cm") is None:
+        return "-"
+    parts = []
+    if (r["off_x_cm"] or 0) > 0:
+        parts.append(f"{r['off_x_cm']:.0f} cm too far {'right' if r['dx_cm'] > 0 else 'left'}")
+    if (r["off_y_cm"] or 0) > 0:
+        parts.append(f"{r['off_y_cm']:.0f} cm too {'high' if r['dy_cm'] > 0 else 'low'}")
+    return ", ".join(parts) if parts else "on the ball"
 
 
 class BallLog:
@@ -46,10 +61,9 @@ class BallLog:
         self._file.flush()
         level = config.LEVELS.get(record["level"], {}).get("name", record["level"])
         detail = f" ({REASON_TEXT.get(record['reason'], record['reason'])})" if record["reason"] else ""
-        off = "-" if record["off_by_cm"] is None else f"{record['off_by_cm']:+.1f} cm"
         swing = "-" if record["swing_offset_ms"] is None else f"{record['swing_offset_ms']:+d} ms"
         print(f"ball {len(self.rows)}: {record['result'].upper()}{detail}  level {level}, "
-              f"paddle off by {off}, swing {swing}")
+              f"paddle {position_text(record)}, swing {swing}, tracking {record.get('tracking') or '-'}")
 
     def summary(self) -> str:
         n = len(self.rows)
@@ -64,9 +78,16 @@ class BallLog:
             for reason, count in Counter(misses).most_common():
                 lines.append(f"  {REASON_TEXT.get(reason, reason):40s} {count:3d}  "
                              f"({count / len(misses) * 100:.0f}% of misses)")
-        no_hand = sum(1 for r in self.rows if r["hand_tracked"] is False)
-        if no_hand:
-            lines.append(f"Wrist not tracked at contact on {no_hand} of {n} balls.")
+        zone = [r for r in self.rows if r["reason"] == "OUT_OF_ZONE"]
+        if zone:
+            side = sum(1 for r in zone if (r["off_x_cm"] or 0) > 0)
+            height = sum(1 for r in zone if (r["off_y_cm"] or 0) > 0)
+            lines.append(f"Out of zone: {side} off left/right, {height} off in height "
+                         f"(a ball can be both).")
+        tracking = Counter(r["tracking"] for r in self.rows if r["tracking"])
+        if tracking and set(tracking) != {"keys"}:
+            lines.append("Hand tracking at contact: " + ", ".join(
+                f"{k} {v}" for k, v in tracking.most_common()))
         lines.append(f"Log: {self.path.relative_to(REPO_ROOT)}")
         return "\n".join(lines)
 

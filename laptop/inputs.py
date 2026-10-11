@@ -5,7 +5,9 @@ can replace a keyboard one later without changing the game logic:
 
   paddle source:  update(dt); .x, .y -> paddle center in the hitting plane (m);
                   .ready (may the game start?), .message (big on-screen text or
-                  None), .has_hand, handle_event(event),
+                  None), .has_hand, .tracking (how the paddle is found:
+                  "keys", or the camera's wrist/hand/elbow/hold/lost),
+                  handle_event(event),
                   draw_on_preview(surface) (extras on the camera view), stop()
                   (KeyboardPaddle here, pose_input.CameraPaddle for the camera)
   swing source:   last_swing(now) -> latest game_state.Swing (arrival time, peak) or
@@ -34,6 +36,7 @@ class KeyboardPaddle:
     ready = True      # nothing to calibrate
     message = None
     has_hand = True   # a keyboard never loses track of the paddle
+    tracking = "keys"
 
     def __init__(self, start_x: float = 0.0, start_y: float = 0.3):
         self.x = start_x   # meters across the table
