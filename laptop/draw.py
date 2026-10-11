@@ -41,6 +41,7 @@ class Renderer:
         self.screen = screen
         self.font = pygame.font.SysFont(None, 36)
         self.big_font = pygame.font.SysFont(None, 96)
+        self.reason_font = pygame.font.SysFont(None, 64)
         self.small_font = pygame.font.SysFont(None, 26)
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
@@ -128,7 +129,12 @@ class Renderer:
         if game.state == gs.WAITING:
             self._draw_waiting(game, paddle_src, tags_on)
         elif game.state == gs.MISS:
-            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.30)
+            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.24)
+            if game.miss_text:   # why: big enough to read mid-rally
+                panel = pygame.Surface((self.screen.get_width(), 70), pygame.SRCALPHA)
+                panel.fill((10, 14, 24, 190))
+                self.screen.blit(panel, (0, h * 0.36 - 35))
+                self._center_text(game.miss_text, self.reason_font, CALIBRATE, h * 0.36)
         elif game.state == gs.POINT:
             self._center_text("POINT!  opponent missed", self.font, STATE_COLORS[gs.POINT], h * 0.30)
             self._center_text("your streak continues", self.small_font, DIM_TEXT, h * 0.30 + 32)
@@ -280,10 +286,11 @@ class Renderer:
         if message:
             self._center_text(message, self.font, CALIBRATE, h * 0.72)
         elif not src.has_hand:
-            # Paddle is frozen until the wrist is seen again
-            p = game.paddle
-            _, y = P(p.x, p.y + config.PADDLE_RADIUS_M * 1.4, config.MY_HIT_Z)
-            self._center_text("no hand", self.font, STATE_COLORS[gs.MISS], y)
+            # Small fixed warning (top center): paddle frozen until the wrist is seen again
+            text = self.small_font.render("  no hand: wrist not tracked  ", True, (255, 255, 255))
+            box = text.get_rect(center=(self.screen.get_width() / 2, 22))
+            pygame.draw.rect(self.screen, (200, 50, 60), box.inflate(8, 8), border_radius=6)
+            self.screen.blit(text, box)
 
     def _center_text(self, text, font, color, y):
         surf = font.render(text, True, color)

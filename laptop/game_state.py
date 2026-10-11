@@ -64,6 +64,15 @@ class Paddle:
 class Swing:
     arrival: float                 # when the laptop got the swing (time.monotonic())
     peak: Optional[float] = None   # peak acceleration in g (|a| - 1 g), if measured
+    peak_gyro: Optional[float] = None   # peak rotation speed in deg/s, if measured
+
+
+# Miss reasons (diagnostics: shown on screen and logged; they don't change the rule)
+REASON_OUT_OF_ZONE = "OUT_OF_ZONE"      # paddle never on the ball's crossing spot (check 2)
+REASON_NO_SWING = "NO_SWING"            # no swing near contact (check 3)
+REASON_TOO_EARLY = "SWING_TOO_EARLY"    # a swing arrived, but before the window opened
+REASON_TOO_LATE = "SWING_TOO_LATE"      # a swing arrived, but after the window closed
+REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plane
 
 
 # =============================================================================
@@ -268,6 +277,13 @@ class GameState:
         self.last_swing_offset = None
         self.last_return_factor = None
 
+        # Diagnostics: why the last miss happened, and one record per ball
+        self.tracking_ok = True       # set by game.py: is the camera seeing my wrist?
+        self.miss_text = None         # e.g. "OUT OF ZONE  12 cm off" (shown during MISS)
+        self.ball_results = []        # finished balls, drained by game.py (CSV log)
+        self._contact_info = None     # distances etc. measured at contact
+        self._pending_miss = None     # miss record waiting to see if a late swing turns up
+
     # ------------------------------------------------------------ controls
     @property
     def params(self) -> dict:
@@ -332,6 +348,8 @@ class GameState:
         while self._paddle_history and self._paddle_history[0][0] < now - config.PADDLE_LOOKBACK_S - 0.05:
             self._paddle_history.popleft()
 
+        self._watch_for_late_swing(swing, now)
+
         if self.state in (MISS, POINT):
             if not self.holding:
                 step_ball(self.ball, dt)   # let the ball fly on / drop
@@ -370,6 +388,9 @@ class GameState:
                 if z_before > config.MY_HIT_Z >= self.ball.z and self.bounced_my_side:
                     self._start_contact(now)
                 elif self.ball.y < -0.5:   # fell off without a proper bounce
+                    self._contact_info = None
+                    self.miss_text = "NO CONTACT"
+                    self.ball_results.append(self._record("miss", REASON_NO_CONTACT, None))
                     events += self._my_miss()
             else:
                 if z_before < config.OPP_HIT_Z <= self.ball.z:
@@ -390,6 +411,7 @@ class GameState:
             self._used_swing = swing.arrival
             self.last_swing_offset = swing.arrival - self._contact_time_used
             self.last_return_factor = return_speed_factor(swing.peak)
+            self.ball_results.append(self._record("hit", None, swing))
             self._my_return(self.last_return_factor)
             self.streak += 1
             events.append(EVENT_HIT)
@@ -399,6 +421,7 @@ class GameState:
         else:
             b = self.ball
             b.vx, b.vy, b.vz = self._held_velocity   # drop past me
+            self._explain_miss(swing, now)
             events += self._my_miss()
         return events
 
@@ -410,6 +433,11 @@ class GameState:
         # Paddle positions from PADDLE_LOOKBACK_S before contact up to now (contact)
         self._contact_paddles = [p for t, p in self._paddle_history
                                  if t >= now - config.PADDLE_LOOKBACK_S]
+        # Diagnostics: closest the paddle got to the crossing spot in the look-back
+        reach = config.PADDLE_RADIUS_M + config.BALL_RADIUS_M + self.hit_tolerance
+        dist = min(math.hypot(b.x - p.x, b.y - p.y) for p in self._contact_paddles)
+        self._contact_info = {"time": now, "distance_m": dist, "off_by_m": dist - reach,
+                              "tolerance_m": self.hit_tolerance, "tracking_ok": self.tracking_ok}
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
@@ -473,6 +501,71 @@ class GameState:
         self.pause_timer = config.POINT_PAUSE_S
         self.opponent.go_home(self.game_time + 0.4)
         return [EVENT_POINT]
+
+    # ------------------------------------------------------------ diagnostics
+    def _explain_miss(self, swing: Optional[Swing], now: float):
+        """Why did the hit rule say miss? Sets miss_text; logs the ball (or, for
+        swing-timing misses, waits LATE_SWING_WATCH_S in case a late swing shows up)."""
+        info = self._contact_info
+        contact = info["time"]
+        if info["off_by_m"] > 0:
+            self.miss_text = f"OUT OF ZONE  {info['off_by_m'] * 100:.0f} cm off"
+            if not info["tracking_ok"]:
+                self.miss_text += "  (no hand)"
+            self.ball_results.append(self._record("miss", REASON_OUT_OF_ZONE, None))
+            return
+        opens = contact - config.SWING_WINDOW_BEFORE_S
+        if (swing is not None and swing.arrival < opens
+                and contact - swing.arrival <= config.EARLY_SWING_LOOK_S):
+            offset_ms = (swing.arrival - contact) * 1000
+            self.miss_text = f"SWING TOO EARLY  {offset_ms:+.0f} ms"
+            record = self._record("miss", REASON_TOO_EARLY, swing)
+        else:
+            self.miss_text = "NO SWING"
+            record = self._record("miss", REASON_NO_SWING, None)
+        # A late swing may still arrive (network delay): keep watching.
+        self._pending_miss = (record, contact + config.LATE_SWING_WATCH_S)
+
+    def _watch_for_late_swing(self, swing: Optional[Swing], now: float):
+        """After a timing miss: a swing arriving after the window closed relabels
+        it SWING TOO LATE. The record is logged when the watch ends."""
+        if self._pending_miss is None:
+            return
+        record, watch_until = self._pending_miss
+        contact = self._contact_info["time"]
+        closes = contact + config.SWING_WINDOW_AFTER_S
+        if (swing is not None and swing.arrival > closes and swing.arrival <= watch_until
+                and record["reason"] != REASON_TOO_LATE):
+            offset_ms = (swing.arrival - contact) * 1000
+            self.miss_text = f"SWING TOO LATE  {offset_ms:+.0f} ms"
+            record.update(self._record("miss", REASON_TOO_LATE, swing))
+        if now >= watch_until or self.state == PLAYING:
+            self.ball_results.append(record)
+            self._pending_miss = None
+
+    def _record(self, result: str, reason: Optional[str], swing: Optional[Swing]) -> dict:
+        """One row for the ball log (see game.py / ball_log.py)."""
+        info = self._contact_info or {}
+        contact = info.get("time")
+        return {
+            "level": self.level,
+            "result": result,
+            "reason": reason or "",
+            "distance_cm": None if "distance_m" not in info else round(info["distance_m"] * 100, 1),
+            "off_by_cm": None if "off_by_m" not in info else round(info["off_by_m"] * 100, 1),
+            "tolerance_cm": None if "tolerance_m" not in info else round(info["tolerance_m"] * 100, 1),
+            "swing_offset_ms": (None if swing is None or contact is None
+                                else round((swing.arrival - contact) * 1000)),
+            "swing_peak_g": None if swing is None else swing.peak,
+            "swing_peak_dps": None if swing is None else swing.peak_gyro,
+            "hand_tracked": info.get("tracking_ok"),
+        }
+
+    def flush_results(self):
+        """Log a still-pending miss (e.g. when quitting)."""
+        if self._pending_miss is not None:
+            self.ball_results.append(self._pending_miss[0])
+            self._pending_miss = None
 
     def _my_miss(self) -> list:
         self.state = MISS

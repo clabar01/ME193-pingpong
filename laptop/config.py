@@ -155,6 +155,11 @@ SWING_WINDOW_AFTER_S = 0.60    # ...or this much after (485 ms worst delay + det
 # long before contact up to contact: swinging moves the tracked wrist right
 # at contact, so the position just before the swing is the one that counts.
 PADDLE_LOOKBACK_S = 0.20
+# Diagnostics only (miss reasons, not the rule): a swing up to this long before
+# the window opens is reported as "too early"; after a timing miss the game
+# keeps watching this long after contact for a "too late" swing.
+EARLY_SWING_LOOK_S = 1.0
+LATE_SWING_WATCH_S = 1.5
 # While waiting for a late swing, the ball presses into the paddle: it keeps
 # its direction but slows down with this time constant (s)...
 HOLD_DECAY_S = 0.04

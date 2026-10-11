@@ -5,3 +5,6 @@ __pycache__/
 board_secrets.py
 .env
 venv/
+
+# per-session ball logs from the game (diagnostics)
+data/balls_*.csv

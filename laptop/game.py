@@ -18,6 +18,8 @@ the same.
 import argparse
 import time
 
+import ball_log
+
 import pygame
 
 import config
@@ -110,6 +112,7 @@ def main():
 
     game = gs.GameState()
     game.camera_mode = args.input == "camera"   # wider hit tolerance for wrist tracking
+    log = ball_log.BallLog(mode=args.input)      # one CSV row per ball + summary at quit
     renderer = draw.Renderer(screen)
 
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)
@@ -157,7 +160,10 @@ def main():
 
             paddle_src.update(dt)
             game.set_paddle(paddle_src.x, paddle_src.y)
+            game.tracking_ok = paddle_src.has_hand
             events += game.update(dt, now, swing_src.last_swing(now))
+            while game.ball_results:
+                log.add(game.ball_results.pop(0))
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
             if shown:   # for sounds later
                 print(f"streak={game.streak} best={game.best_streak} events={shown}")
@@ -175,6 +181,11 @@ def main():
                           swing_info=swing_display(swing_src, mqtt, now))
             pygame.display.flip()
     finally:
+        game.flush_results()
+        while game.ball_results:
+            log.add(game.ball_results.pop(0))
+        print("\n" + log.summary())
+        log.close()
         if camera is not None:
             camera.stop()
         if mqtt is not None:

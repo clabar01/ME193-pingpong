@@ -227,7 +227,9 @@ class GameMqtt:
         self.swing_count += 1
         self.last_swing_info = {"peak": peak, "peak_gyro": event.get("peak_gyro"),
                                 "delay_ms": delay_ms, "count": self.swing_count, "arrival": arrival}
-        self.last_swing = Swing(arrival=arrival, peak=peak)   # last: the game acts on this
+        gyro = event.get("peak_gyro")
+        self.last_swing = Swing(arrival=arrival, peak=peak,      # last: the game acts on this
+                                peak_gyro=float(gyro) if gyro is not None else None)
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         if self.connected and not self._stopping:
