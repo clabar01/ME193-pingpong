@@ -209,8 +209,23 @@ class CameraPaddle:
         return self.step == READY
 
     @property
+    def calib_info(self) -> Optional[tuple]:
+        """For the calibration screen: (step, step number 1-4, seconds left,
+        short note or "") while calibrating, else None. step is "left",
+        "right", "high" or "low"; the note is one or two words ("NO HAND",
+        "REACH FARTHER", "TRY AGAIN"). The full sentence is in message."""
+        if self.step == READY:
+            return None
+        left = max(0.0, config.CALIB_COUNTDOWN_S - (time.monotonic() - self._step_start))
+        note = self._calib_note
+        short = ("" if not note else "NO HAND" if note.startswith("no hand")
+                 else "REACH FARTHER" if note.startswith("range only") else "TRY AGAIN")
+        return self.step, CALIB_STEPS.index(self.step) + 1, left, short
+
+    @property
     def message(self) -> Optional[str]:
-        """Big text for the screen, or None."""
+        """Full text (camera error, or the calibration step in a sentence);
+        the normal screen uses calib_info, the debug overlay this."""
         error = getattr(self.camera, "error", None)
         if error:
             return error
@@ -281,10 +296,11 @@ class CameraPaddle:
         return any(x0 - m <= x <= x1 + m and y0 - m <= y <= y1 + m
                    for x0, y0, x1, y1 in reading.boxes.values())
 
-    def draw_on_preview(self, surf: pygame.Surface):
+    def draw_on_preview(self, surf: pygame.Surface, debug: bool = False):
         """On the camera view: the calibrated range (shaded outside, green edges
-        labeled L / R / HI / LO with the span in %), and the tracked hand (ring
-        colored by its source). During calibration: the edges recorded so far."""
+        labeled L / R / HI / LO), and the tracked hand (ring colored by its
+        source). During calibration: the edges recorded so far. With debug:
+        also the span in % and the tracking source next to the hand."""
         w, h = surf.get_size()
         font = pygame.font.SysFont(None, 22)
         edge_color = (90, 230, 120)
@@ -301,7 +317,8 @@ class CameraPaddle:
             surf.blit(shade, (0, 0))
             span = font.render(f"range {(self.right_x - self.left_x) * 100:.0f}% x "
                                f"{(self.low_y - self.high_y) * 100:.0f}% of view", True, edge_color)
-            surf.blit(span, ((self.left_x + self.right_x) / 2 * w - span.get_width() / 2, h - 22))
+            if debug:
+                surf.blit(span, ((self.left_x + self.right_x) / 2 * w - span.get_width() / 2, h - 22))
         for x, label in vertical:
             pygame.draw.line(surf, edge_color, (x * w, 0), (x * w, h), 3)
             tag = font.render(label, True, (0, 0, 0), edge_color)
@@ -316,7 +333,7 @@ class CameraPaddle:
             wx, wy = r.wrist_x * w, r.wrist_y * h
             pygame.draw.line(surf, color, (wx, 0), (wx, h), 1)
             pygame.draw.circle(surf, color, (wx, wy), 11, 3)
-            if self.tracking != "wrist":
+            if debug and self.tracking != "wrist":
                 tag = font.render(self.tracking, True, (0, 0, 0), color)
                 surf.blit(tag, (wx + 14, wy - 8))
         else:

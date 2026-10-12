@@ -113,6 +113,8 @@ def main():
                              "(always on with --input camera)")
     parser.add_argument("--no-imu", action="store_true",
                         help="ignore the paddle IMU: every ball counts as swung")
+    parser.add_argument("--debug", action="store_true",
+                        help="start with the debug overlay on (D toggles it)")
     parser.add_argument("--no-publish", action="store_true",
                         help="never publish the record to the score topic (for testing)")
     args = parser.parse_args()
@@ -126,7 +128,7 @@ def main():
     game.camera_mode = args.input == "camera"   # wider hit tolerance for wrist tracking
     log = ball_log.BallLog(mode=args.input)      # one CSV row per ball + summary at quit
     event_log = ball_log.EventLog()               # game events + sounds, for tracing
-    renderer = draw.Renderer(screen)
+    renderer = draw.Renderer(screen, debug=args.debug or config.DEBUG_OVERLAY)   # D toggles debug
 
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)
     # IMU swings arrive over MQTT, so the IMU needs MQTT on.
@@ -150,7 +152,8 @@ def main():
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
     sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
     sound_notes = []                       # (time, "name: reason") shown on screen
-    banner = None                          # (text, kind, start time): HIGH SCORE! / SLOW-MO! / EXTRA LIFE!
+    # ONE message at a time: the newest replaces the old (see draw.py)
+    banner = None                          # (text, kind, start time); kind good / bad / power / neutral
 
     running = True
     try:
@@ -163,6 +166,8 @@ def main():
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_d:
+                    renderer.debug = not renderer.debug   # debug overlay on / off
                 key_src.handle_event(event)
                 if game.state == gs.PLAYING:
                     swing_src.handle_event(event)    # Space = swing (keyboard paddle)
@@ -184,6 +189,7 @@ def main():
                 if swing is not None and swing.arrival >= game.game_over_at + config.GAME_OVER_SWING_IGNORE_S:
                     actions.append(("start", None))
             streak_before = game.streak            # (a miss resets it; the sound rules need it)
+            state_before = game.state
             events = apply_actions(game, actions, paddle_src.ready)
 
             paddle_src.update(dt)
@@ -201,10 +207,21 @@ def main():
                 log.add(record)
             if gs.EVENT_LIFE_OFFER in events and tag_src is not None:
                 tag_src.rearm(config.TAG_EXTRA_LIFE)   # card already up when I missed: let it count
+            # The one message (later lines win if two happen in the same frame)
+            if gs.EVENT_GO in events:
+                banner = ("GO!", "good", now)
             if gs.EVENT_SLOWMO in events:
-                banner = ("SLOW-MO!", "slowmo", now)
+                banner = ("SLOW-MO!", "power", now)
             if gs.EVENT_LIFE_USED in events:
-                banner = ("EXTRA LIFE!", "life", now)
+                banner = ("EXTRA LIFE!", "power", now)
+            if gs.EVENT_CARD_REFUSED in events and game.card_note:
+                used = "already used" in game.card_note[0]
+                banner = ("ALREADY USED" if used else "NOT NOW", "neutral", now)
+            # A fresh miss: one or two words ("TOO LATE", "MISSED", "SWING!") on
+            # their own, before the EXTRA LIFE countdown or GAME OVER screen.
+            # (Not again when the countdown runs out: that miss was shown already.)
+            if gs.EVENT_LIFE_OFFER in events or (gs.EVENT_GAME_OVER in events and state_before != gs.EXTRA_LIFE):
+                banner = (draw.short_miss(game.miss_text), "bad", now)
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
             if shown:
                 line = f"streak={game.streak} best={game.best_streak} events={shown}"
@@ -222,7 +239,7 @@ def main():
                 line = f"SOUND {name}: {reason}"
                 event_log.write(line)
                 if name == "record":
-                    banner = ("HIGH SCORE!", "record", now)   # the banner goes with the chime (same rule)
+                    banner = ("HIGH SCORE!", "good", now)   # the banner goes with the chime (same rule)
                 if name != "tick":         # ticks: in the log only (two per shot)
                     print(line)
                     sound_notes.append((now, f"{name}: {reason}"))
@@ -233,7 +250,7 @@ def main():
             # Camera view with each source's extras drawn on it
             view = camera.preview_surface() if camera is not None else None
             if view is not None:
-                paddle_src.draw_on_preview(view)
+                paddle_src.draw_on_preview(view, debug=renderer.debug)
                 if tag_src is not None:
                     tag_src.draw_on_preview(view)
             renderer.draw(game, paddle_src, view, camera_error=getattr(camera, "error", None),

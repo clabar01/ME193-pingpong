@@ -198,7 +198,8 @@ CALIB_SAMPLE_S = 0.5         # wrist x is averaged over this final stretch
 CALIB_MIN_SPAN = 0.35        # left and right must differ by at least this much of the frame
                              # width; narrower = tiny wrist moves cross the whole table
 CALIB_MIN_SPAN_Y = 0.20      # high and low: at least this much of the frame height
-CAMERA_PREVIEW_WIDTH = 320   # size of the camera view drawn in the game window
+CAMERA_PREVIEW_WIDTH = 320   # camera view on the start / calibration screens (and in debug)
+CAMERA_PREVIEW_SMALL_WIDTH = 176   # ...tucked into the bottom-left corner during play
 # Paddle height: wrist at the calibrated HIGH spot -> PADDLE_Y_MAX_M, at the
 # LOW spot -> PADDLE_Y_MIN_M, linear in between (clamped).
 
@@ -286,7 +287,16 @@ SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
 
 # ---------------------------------------------------------------- Score display (draw.py)
 SCORE_POP_S = 0.3              # the volley count pops (grows, then settles) this long on each hit
-HIGH_SCORE_BANNER_S = 2.0      # banners ("HIGH SCORE!", "SLOW-MO!", "EXTRA LIFE!") stay this long
+# One message at a time: GO!, HIGH SCORE!, SLOW-MO!, EXTRA LIFE!, ALREADY USED
+# and the miss word share one banner; a new one replaces the old. Each pops in
+# and fades out over BANNER_S.
+BANNER_S = 1.0
+# The miss word ("TOO LATE", "MISSED", "SWING!") shows this long on its own
+# before the EXTRA LIFE countdown or GAME OVER screen appears.
+MISS_FLASH_S = 0.9
+# Debug overlay (MQTT, swing meter, delays, tracking, sound trace, miss
+# details, speed): hidden by default; D toggles it, --debug starts with it on.
+DEBUG_OVERLAY = False
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
 # Which sound when: see the table at the top of sounds.py. Files in

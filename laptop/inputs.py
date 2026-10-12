@@ -45,7 +45,7 @@ class KeyboardPaddle:
     def handle_event(self, event):
         pass
 
-    def draw_on_preview(self, surf):
+    def draw_on_preview(self, surf, debug=False):
         pass
 
     def stop(self):
@@ -130,7 +130,9 @@ DIGIT_KEYS = {0: (pygame.K_0, pygame.K_KP0), 1: (pygame.K_1, pygame.K_KP1), 2: (
 
 
 class KeyboardStart:
-    """Space starts the game; number keys 1/2/3 (config.KEY_LEVELS) pick the level; S and L play the
+    """Space starts the game at the current level; number keys 1/2/3
+    (config.KEY_LEVELS) pick that level and start (like holding up a level
+    card); S and L play the
     SLOW-MO and EXTRA LIFE cards (for testing without printed tags).
 
     The fallback for the AprilTag source (apriltag_input.TagStart), which
@@ -152,7 +154,7 @@ class KeyboardStart:
         elif event.key == pygame.K_SPACE:
             self._actions.append(("start", None))   # None = keep the current level
         elif event.key in self.LEVEL_KEYS and self.LEVEL_KEYS[event.key] in config.LEVELS:
-            self._actions.append(("level", self.LEVEL_KEYS[event.key]))
+            self._actions.append(("start", self.LEVEL_KEYS[event.key]))   # pick that level and start
 
     def poll(self) -> list:
         """Actions since the last poll."""
