@@ -11,6 +11,7 @@
              extra-life countdown
     go       higher, longer beep: GO, the ball is served
     smash    a sharp crack + whoosh: a SMASH return (voice power-up)
+    armed    a quick rising zap: "smash" armed for the next ball
 
 WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
 <reason>", shown on screen and written to data/events_<time>.log):
@@ -23,6 +24,7 @@ WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
   - before every serve: 3, 2, 1                        -> count on each number
       ...GO (the ball is served)                      -> go
   - SLOW-MO card used                                 -> slowmo
+  - voice "smash" armed                              -> armed (zap), with the SMASH ARMED banner
   - a hit with the voice SMASH armed                  -> smash (with the tock)
   - I miss with the extra life unused                 -> count (5), then count each
                                                          second (4 ... 1); no death yet
@@ -64,10 +66,10 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count", "go", "smash")
+NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count", "go", "smash", "armed")
 END_OF_STREAK = ("death",)   # stops everything else and plays alone
 # Peak level of each built-in sound (the tick is meant to sit under the tock)
-PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "go": 0.75, "slowmo": 0.7, "life": 0.8}
+PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "go": 0.75, "slowmo": 0.7, "life": 0.8, "armed": 0.7}
 SOUND_CHUNK = 512      # samples per write: ~12 ms at 44.1 kHz (latency of a new sound)
 
 _NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6,
@@ -104,6 +106,14 @@ def synthesize(name: str, rate: int) -> np.ndarray:
         wave_ = (np.sin(2 * np.pi * 3200 * t) * np.exp(-t / 0.004)
                  + 0.6 * np.sin(2 * np.pi * 5100 * t) * np.exp(-t / 0.002)
                  + 0.5 * rng.uniform(-1, 1, n) * np.exp(-t / 0.001))
+    elif name == "armed":
+        # A quick rising zap (300 -> 1500 Hz in 0.25 s) with a little buzz.
+        n = int(rate * 0.25)
+        t = np.arange(n) / rate
+        hz = 300 * (1500 / 300) ** (t / t[-1])
+        phase = 2 * np.pi * np.cumsum(hz) / rate
+        env = np.minimum(1, t / 0.01) * np.minimum(1, (t[-1] - t) / 0.05)
+        wave_ = (np.sin(phase) + 0.4 * np.sign(np.sin(3 * phase))) * env
     elif name == "smash":
         # A sharp crack (noise burst) and a fast whoosh (falling noisy tone).
         n = int(rate * 0.35)
@@ -246,6 +256,8 @@ class SoundRules:
             out.append(("count", f"serve countdown {game.ready_number}"))
         if gs.EVENT_GO in events:
             out.append(("go", "GO: the ball is served"))
+        if gs.EVENT_SMASH_ARMED in events:
+            out.append(("armed", "voice smash armed for the next ball"))
         if gs.EVENT_SMASH_HIT in events:
             out.append(("smash", "SMASH: voice smash armed and the ball hit"))
         if gs.EVENT_SLOWMO in events:

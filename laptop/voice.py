@@ -12,12 +12,12 @@ HOW IT WORKS (for the write-up)
     1. the grammar recognizer heard exactly that one phrase, with nothing
        unknown around it ("smashing pumpkins" -> "smash [unk]" is ignored), AND
     2. for the STRICT commands (VOICE_STRICT_COMMANDS: play again, level
-       one/two/three, pause - the ones that would disrupt the game), a second
+       one/two/three - the ones that would disrupt the game), a second
        recognizer on the same audio, with no grammar (free English), heard
        every word of the command (each word at least VOICE_WORD_MATCH
-       similar), so "play the game" (no "again") is ignored. smash, resume
-       and score skip check 2: it fails often in a noisy room, and a wrong
-       one costs little (they also only act at the right moment in the game).
+       similar), so "play the game" (no "again") is ignored. smash, pause,
+       resume and score skip check 2: it fails often in a noisy room (it once
+       heard "pause" as "pass"), and a wrong one costs little.
   Then a VOICE_COOLDOWN_S cooldown per command, so one phrase triggers once.
 
   The game's own sounds must not trigger commands: while a longer game sound
@@ -120,6 +120,7 @@ class VoiceListener:
         self.status = "loading" if enabled else "off"
         self.last = None
         self.log = queue.Queue()                 # (time, text) decisions for the events log
+        self.rejected = queue.Queue()            # (command, short reason, time): heard but not accepted
         self._commands = queue.Queue()
         self._last_fired = {}
         self._stop = threading.Event()
@@ -139,6 +140,12 @@ class VoiceListener:
         out = []
         while not self.log.empty():
             out.append(self.log.get_nowait())
+        return out
+
+    def poll_rejected(self) -> list:
+        out = []
+        while not self.rejected.empty():
+            out.append(self.rejected.get_nowait())
         return out
 
     def stop(self):
@@ -219,6 +226,9 @@ class VoiceListener:
             self.log.put((now, f"VOICE heard {cmd!r} (free recognizer: {free!r})"))
         else:
             self.log.put((now, f"VOICE ignored {said!r}: {why} (free recognizer: {free!r})"))
+            if cmd is not None:   # a command was heard but not accepted: say why, briefly
+                short = "again?" if why == "cooldown" else "not sure"
+                self.rejected.put((cmd, short, now))
 
     @staticmethod
     def _input_rate(pa, pyaudio, index: int, default: int) -> int:

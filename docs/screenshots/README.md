@@ -16,3 +16,4 @@ The camera view shows a drawn stand-in figure instead of the webcam picture.
 | `8_debug_overlay.png` | Debug overlay (D): state, speed, tracking, sounds, MQTT, swing meter |
 | `9_voice_smash_armed.png` | Voice "smash" armed: ring on the ball, glowing bolt, mic with the last command, swing force "4.2 g" |
 | `10_voice_paused.png` | Voice "pause" |
+| `11_voice_smash_armed_banner.png` | "smash" said while the return flies away: SMASH ARMED banner, ring on the ball, glowing bolt, "smash: armed" by the mic |

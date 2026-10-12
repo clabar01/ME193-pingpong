@@ -120,6 +120,34 @@ VOICE_ACTIONS = {"smash": ("smash", None), "pause": ("pause", None), "resume": (
                  "level one": ("start", 0), "level two": ("start", 1), "level three": ("start", 2)}
 
 
+def voice_outcome(command: str, game, events: list, paddle_ready: bool):
+    """(short note, kind) for the mic after a voice command: kind "ok" (it
+    worked), "info" (it will happen soon) or "no" (refused, and why)."""
+    if command == "smash":
+        if gs.EVENT_SMASH_ARMED in events:
+            return ("smash: next ball" if game.smash_ready and not game.smash_armed else "smash: armed"), "ok"
+        note = (game.card_note or ("",))[0]
+        return ("smash: used" if "already used" in note else "smash: no rally"), "no"
+    if command == "pause":
+        if gs.EVENT_PAUSE in events:
+            return "pause", "ok"
+        if gs.EVENT_PAUSE_PENDING in events:
+            return "pause: after this ball", "info"
+        return "pause: no rally", "no"
+    if command == "resume":
+        return ("resume", "ok") if gs.EVENT_RESUME in events else ("resume: not paused", "no")
+    # play again / level one-two-three: start a game
+    if gs.EVENT_READY_COUNT in events:
+        return command, "ok"
+    if game.state not in (gs.WAITING, gs.GAME_OVER) or (command == "play again" and game.state != gs.GAME_OVER):
+        return f"{command}: not now", "no"
+    if game.state == gs.GAME_OVER and not game.can_play_again:
+        return f"{command}: wait", "no"
+    if not paddle_ready:
+        return f"{command}: calibrate first", "no"
+    return f"{command}: not now", "no"
+
+
 def voice_actions(command: str, game) -> list:
     """The actions for a voice command ("score" is handled by game.py: it speaks)."""
     if command == "play again":        # = a swing on the GAME OVER screen
@@ -186,6 +214,7 @@ def main():
     sound_notes = []                       # (time, "name: reason") shown on screen
     # ONE message at a time: the newest replaces the old (see draw.py)
     banner = None                          # (text, kind, start time); kind good / bad / power / neutral
+    voice_note = None                      # (text, "ok" / "info" / "no", time) shown by the mic
 
     running = True
     try:
@@ -207,9 +236,7 @@ def main():
                     paddle_src.handle_event(event)   # e.g. C = recalibrate the camera
 
             actions = key_src.poll()
-            for command, heard, _ in listener.poll():     # voice commands
-                game.note_voice(command)                  # (CSV: commands before each ball)
-                actions += [("score", None)] if command == "score" else voice_actions(command, game)
+            voice_commands = listener.poll()                # handled one by one below
             for _, line in listener.poll_log():
                 print(line)
                 event_log.write(line)
@@ -235,6 +262,24 @@ def main():
             streak_before = game.streak            # (a miss resets it; the sound rules need it)
             state_before = game.state
             events = apply_actions(game, actions, paddle_src.ready)
+            # Voice commands, one at a time so each gets its own note by the mic
+            for command, heard, _ in voice_commands:
+                game.note_voice(command)                    # (CSV: commands before each ball)
+                if command == "score":                      # say it out loud
+                    count = game.last_rally if game.state == gs.GAME_OVER else game.streak
+                    text = f"{count} volleys. Best {game.best_streak}."
+                    speaker.say(text)
+                    event_log.write(f"SPEAK {text!r}")
+                    voice_note = ("score", "ok", now)
+                    continue
+                ev = apply_actions(game, voice_actions(command, game), paddle_src.ready)
+                events += ev
+                text, kind = voice_outcome(command, game, ev, paddle_src.ready)
+                voice_note = (text, kind, now)
+                if kind != "ok":
+                    event_log.write(f"VOICE {command!r} not done: {text}")
+            for command, why, _ in listener.poll_rejected():   # heard, but not accepted
+                voice_note = (f"{command}: {why}", "no", now)
 
             paddle_src.update(dt)
             game.set_paddle(paddle_src.x, paddle_src.y)
@@ -258,6 +303,8 @@ def main():
                 banner = ("SLOW-MO!", "power", now)
             if gs.EVENT_LIFE_USED in events:
                 banner = ("EXTRA LIFE!", "power", now)
+            if gs.EVENT_SMASH_ARMED in events:
+                banner = ("SMASH ARMED", "power", now)
             if gs.EVENT_SMASH_HIT in events:
                 banner = ("SMASH!", "power", now)
             if gs.EVENT_CARD_REFUSED in events and game.card_note:
@@ -305,7 +352,7 @@ def main():
                           sound_notes=[s for _, s in sound_notes],
                           banner=None if banner is None else (banner[0], banner[1], now - banner[2]),
                           now=now, play_again=("imu" in swing_src.kind, tag_src is not None),
-                          voice=(listener.status, listener.last))
+                          voice=(listener.status, voice_note))
             pygame.display.flip()
     finally:
         game.flush_results()

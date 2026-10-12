@@ -325,11 +325,12 @@ VOICE_COOLDOWN_S = 1.0        # the same command can't trigger twice within this
 # the game if they fired by mistake, must ALSO be heard by a second, free
 # recognizer on the same audio: every word at least VOICE_WORD_MATCH similar
 # (difflib ratio), so near-misses like "play the game" -> "play again" don't
-# fire. The others (smash, resume, score) skip that check, so they still work
-# in a noisy room. Measured on synthesized speech + classroom babble: strict
+# fire. The others (smash, pause, resume, score) skip that check, so they
+# still work in a noisy room; a wrong pause is harmless (say "resume"). (pause
+# was strict until a test where the check heard "pass" and dropped it.) Measured on synthesized speech + classroom babble: strict
 # = 0 false triggers in 2 min of chatter but 22% recognized at 10 dB SNR;
 # grammar only = 78% at 10 dB but 5 false triggers (all level / play again).
-VOICE_STRICT_COMMANDS = ["play again", "level one", "level two", "level three", "pause"]
+VOICE_STRICT_COMMANDS = ["play again", "level one", "level two", "level three"]
 VOICE_WORD_MATCH = 0.75
 # The game's own sounds must not trigger commands: the mic is ignored while a
 # sound at least VOICE_MUTE_MIN_SOUND_S long is playing (death, jingles, GO,
@@ -339,10 +340,10 @@ VOICE_MUTE_MIN_SOUND_S = 0.15
 VOICE_MUTE_TAIL_S = 0.4
 VOICE_SHOW_S = 1.5            # the last heard command stays on screen this long
 TTS_RATE = 190                # words per minute for "score" (pyttsx3)
-# "smash" (voice power-up): said while the ball is coming to me (after the
-# opponent hit it, before it reaches my paddle) it arms a SMASH for that ball;
-# hitting it sends the return back SMASH_SPEED_FACTOR x faster. Once per rally
-# (comes back with the power-up cards); a missed armed ball just uses it up.
+# "smash" (voice power-up): said any time during a rally, it arms a SMASH for
+# the NEXT ball that reaches my paddle; hitting it sends the return back
+# SMASH_SPEED_FACTOR x faster. Once per rally (comes back with the power-up
+# cards); a missed armed ball just uses it up.
 SMASH_SPEED_FACTOR = 1.5
 
 # ---------------------------------------------------------------- States

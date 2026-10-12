@@ -51,12 +51,14 @@ with `python tools/voice_test.py --live --prompt 20`.
 
 | Say | What it does |
 |---|---|
-| "smash" | while the ball is coming to you: your return goes back 1.5x faster (once per rally) |
+| "smash" | any time in a rally: arms a SMASH for the next ball that reaches you; hit it and it goes back 1.5x faster (once per rally) |
 | "play again" | on the GAME OVER screen: play again (same level) |
 | "level one" / "level two" / "level three" | on the start or GAME OVER screen: play Beginner / Club / Pro |
-| "pause" / "resume" | pause and unpause a rally |
+| "pause" / "resume" | pause and unpause (during a rally, the 3-2-1 or the extra-life countdown; if a ball is at your paddle, right after it) |
 | "score" | says your volley count and best out loud |
 
-Keyboard stand-ins: X = smash, P = pause/resume, T = score. `python laptop/game.py --no-voice`
+Next to the mic icon the game says what became of each command: white = done ("smash: armed"),
+grey = soon ("pause: after this ball"), red = not done and why ("smash: used",
+"play again: wait", "level two: not sure"). Keyboard stand-ins: X = smash, P = pause/resume, T = score. `python laptop/game.py --no-voice`
 turns voice off (no microphone, no speech). No microphone or no model: the
 game prints one message and plays on.

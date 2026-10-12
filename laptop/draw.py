@@ -117,7 +117,7 @@ class Renderer:
         banner: (text, kind, age s) of the one current message, or None;
                 kind = "good" / "bad" / "power" / "neutral".
         play_again: (a real swing can play again, tags are on).
-        voice: (listener status, (last command, time) or None), or None.
+        voice: (listener status, (note, "ok"/"info"/"no", time) or None), or None.
         mqtt_status, swing_info, sound_notes: debug overlay only.
         """
         calib = getattr(paddle_src, "calib_info", None)
@@ -191,8 +191,8 @@ class Renderer:
         a heart (extra life), a clock (slow-mo; while it runs, dots for the
         balls left) and a bolt (voice SMASH; glowing while armed)."""
         x = right_x
-        if game.smash_armed or not game.smash_used:
-            if game.smash_armed:   # armed: a pulsing ring
+        if game.smash_ready or not game.smash_used:
+            if game.smash_ready:   # armed: a pulsing ring
                 pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 90)
                 pygame.draw.circle(self.screen, POWER, (x, y + 2), int(17 + 4 * pulse), 2)
             self._bolt(x, y + 2, POWER)
@@ -228,9 +228,11 @@ class Renderer:
         label = self.font.render(f"{info['peak']:.1f} g", True, color)
         self.screen.blit(label, label.get_rect(bottomright=(bar.x - 10, bar.bottom)))
 
-    def _draw_voice(self, status: str, last, now):
+    def _draw_voice(self, status: str, note, now):
         """Bottom center: a small mic (green = listening, grey = ignoring the
-        game's own sounds, red = no mic / no model) and the last command."""
+        game's own sounds, red = no mic / no model) and what became of the last
+        command: "smash: armed" (white), "pause: after this ball" (grey),
+        "smash: used" / "pause: not sure" (red)."""
         if status == "off":
             return
         w, h = self.screen.get_size()
@@ -241,8 +243,9 @@ class Renderer:
         pygame.draw.line(self.screen, color, (x, y + 7), (x, y + 11), 2)
         if status in ("no mic", "no model"):
             pygame.draw.line(self.screen, BAD, (x - 10, y - 14), (x + 10, y + 10), 2)
-        if last is not None and now is not None and now - last[1] < config.VOICE_SHOW_S:
-            text = self.font.render(f'"{last[0]}"', True, TEXT)
+        if note is not None and now is not None and now - note[2] < config.VOICE_SHOW_S:
+            color = {"ok": TEXT, "info": DIM_TEXT}.get(note[1], BAD)
+            text = self.font.render(note[0], True, color)
             self.screen.blit(text, text.get_rect(midleft=(x + 18, y - 2)))
 
     def _draw_paused(self):
