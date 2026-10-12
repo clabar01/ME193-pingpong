@@ -146,7 +146,7 @@ def main():
         swing_src = inputs.ImuSwing(mqtt)                     # real swings only
     else:
         swing_src = inputs.LatestSwing(inputs.ImuSwing(mqtt), inputs.KeyboardSwing())
-    key_src = inputs.KeyboardStart()       # Space / 0-2: always available as a fallback
+    key_src = inputs.KeyboardStart()       # Space / 1-2-3: always available as a fallback
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
     sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
     sound_notes = []                       # (time, "name: reason") shown on screen

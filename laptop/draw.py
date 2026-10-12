@@ -136,13 +136,13 @@ class Renderer:
             why = "  -  ".join(game.miss_text.split("\n"))
             self._center_text(why, self.small_font, CALIBRATE, h * 0.53)
 
-        level = f"Level {game.level}: {config.LEVELS[game.level]['name']}"
+        level = config.LEVELS[game.level]["name"]
         options = []
         if swing_ok:
             options.append(f"Swing the paddle to play again ({level})")
         if tags_ok:
-            options.append("Hold up a level tag (0, 1 or 2) to play again at that level")
-        options.append("Press SPACE to play again" + ("" if swing_ok else f" ({level})"))
+            options.append("Show a level card to play again at that level")
+        options.append("Press 1/2/3 to change level, SPACE to play again")
         ready = game.can_play_again
         if not ready and now is not None and game.game_over_at is not None:
             wait = config.GAME_OVER_SWING_IGNORE_S - (now - game.game_over_at)
@@ -152,6 +152,7 @@ class Renderer:
         for i, line in enumerate(options):
             self._center_text(line, self.font, STATE_COLORS[gs.WAITING] if ready else (70, 80, 100),
                               h * 0.68 + i * 40)
+        self._draw_level_choices(game.level, tags_ok, h * 0.68 + len(options) * 40 + 4)
         if now is not None and game.game_over_at is not None:
             left = config.GAME_OVER_IDLE_S - (now - game.game_over_at)
             self._center_text(f"back to the start screen in {max(left, 0):.0f} s", self.small_font,
@@ -417,7 +418,7 @@ class Renderer:
         self.screen.blit(state, (20, 16))
         level = config.LEVELS[game.level]
         checks = "left/right only" if game.hit_tolerance[1] is None else "left/right + height"
-        lvl = self.small_font.render(f"Level {game.level}: {level['name']} ({checks})", True, DIM_TEXT)
+        lvl = self.small_font.render(f"{level['name']} ({checks})", True, DIM_TEXT)   # (names only: keys are 1/2/3, cards 0/1/2)
         self.screen.blit(lvl, (20, 52))
 
         w = self.screen.get_width()
@@ -496,14 +497,30 @@ class Renderer:
         self.screen.blit(panel, panel.get_rect(center=(self.screen.get_width() / 2, h * 0.45)))
         self._center_text("PING PONG", self.big_font, TEXT, h * 0.32)
         if ready:
-            start = ("Hold up a level tag (0-2) for 1 s, or press SPACE" if tags_on
-                     else "Press SPACE to start")
+            start = ("Show a level card or press 1/2/3, then SPACE" if tags_on
+                     else "Press 1/2/3 to pick a level, then SPACE")
             self._center_text(start, self.font, STATE_COLORS[gs.WAITING], h * 0.46)
-        levels = "   ".join(f"[{n}] {v['name']}" for n, v in sorted(config.LEVELS.items()))
-        self._center_text(f"Pick a level: {levels}", self.small_font, DIM_TEXT, h * 0.54)
+        self._draw_level_choices(game.level, tags_on, h * 0.54)
         hint = ("Your wrist moves the paddle (left/right, up/down).  C recalibrates.  Esc quits." if camera
                 else "Arrow keys move the paddle (left/right, up/down).  Space = swing.  Esc quits.")
         self._center_text(hint, self.small_font, DIM_TEXT, h * 0.60)
+
+    def _draw_level_choices(self, current: int, tags_on: bool, y: float):
+        """One row: each level with its card (AprilTag ID) and key; the
+        current level highlighted, e.g. "Beginner  card 0 / key 1"."""
+        cards = {lvl: tag for tag, lvl in config.TAG_LEVELS.items()}
+        keys = {lvl: key for key, lvl in config.KEY_LEVELS.items()}
+        parts = []
+        for lvl, v in sorted(config.LEVELS.items()):
+            how = " / ".join(x for x in ((f"card {cards[lvl]}" if tags_on and lvl in cards else ""),
+                                          (f"key {keys[lvl]}" if lvl in keys else "")) if x)
+            text = f"{v['name']}  ({how})" if how else v["name"]
+            parts.append(self.small_font.render(text, True, GOLD if lvl == current else DIM_TEXT))
+        gap = 36
+        x = (self.screen.get_width() - sum(p.get_width() for p in parts) - gap * (len(parts) - 1)) / 2
+        for surf in parts:
+            self.screen.blit(surf, surf.get_rect(midleft=(x, y)))
+            x += surf.get_width() + gap
 
     def _draw_camera(self, view):
         """Camera view (top right, under the scores)."""

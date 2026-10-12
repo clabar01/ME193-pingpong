@@ -122,16 +122,22 @@ class LatestSwing:
         return max(swings, key=lambda s: s.arrival) if swings else None
 
 
+# Each digit's key on the number row and on the keypad (keypad codes aren't in order)
+DIGIT_KEYS = {0: (pygame.K_0, pygame.K_KP0), 1: (pygame.K_1, pygame.K_KP1), 2: (pygame.K_2, pygame.K_KP2),
+              3: (pygame.K_3, pygame.K_KP3), 4: (pygame.K_4, pygame.K_KP4), 5: (pygame.K_5, pygame.K_KP5),
+              6: (pygame.K_6, pygame.K_KP6), 7: (pygame.K_7, pygame.K_KP7), 8: (pygame.K_8, pygame.K_KP8),
+              9: (pygame.K_9, pygame.K_KP9)}
+
+
 class KeyboardStart:
-    """Space starts the game; number keys 0-2 pick the level; S and L play the
+    """Space starts the game; number keys 1/2/3 (config.KEY_LEVELS) pick the level; S and L play the
     SLOW-MO and EXTRA LIFE cards (for testing without printed tags).
 
     The fallback for the AprilTag source (apriltag_input.TagStart), which
     produces the same actions.
     """
 
-    LEVEL_KEYS = {pygame.K_0: 0, pygame.K_1: 1, pygame.K_2: 2,
-                  pygame.K_KP0: 0, pygame.K_KP1: 1, pygame.K_KP2: 2}
+    LEVEL_KEYS = {key: level for digit, level in config.KEY_LEVELS.items() for key in DIGIT_KEYS[digit]}
 
     def __init__(self):
         self._actions = []

@@ -55,7 +55,7 @@ MAX_DT = 1 / 20     # cap one frame's time step (s) so a hiccup can't teleport t
 PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever the frame rate
 
 # ---------------------------------------------------------------- Levels
-# The AprilTag ID held up at the start selects the level (or keys 0-2 on the
+# The AprilTag ID held up at the start selects the level (or KEY_LEVELS on the
 # WAITING screen).
 # THE GOAL: as many volleys (my hits) in a row as possible. The opponent never
 # misses, and every hit of mine makes the next ball a bit harder (RALLY RAMP
@@ -112,6 +112,10 @@ AIM_SPREAD_MAX_M = 0.55
 ZONE_SHRINK_PER_SPEED = 0.5
 ZONE_MIN_SCALE = 0.6
 DEFAULT_LEVEL = 0   # used when starting from the keyboard (no tag)
+# Keyboard level keys on the WAITING and GAME OVER screens: number key -> level
+# (1 = Beginner, 2 = Club, 3 = Pro). They only pick the level; Space starts.
+# The AprilTag level cards (TAG_LEVELS, IDs 0/1/2) work as before.
+KEY_LEVELS = {1: 0, 2: 1, 3: 2}
 
 # ---------------------------------------------------------------- Table & world (meters)
 # x: across the table (0 = center, + = right), z: along it (0 = MY end,
@@ -236,7 +240,7 @@ SLOWMO_BALLS = 3
 # count and the ramp continue, a new ball is served). Once used, misses end
 # the rally at once.
 TAG_EXTRA_LIFE = 11
-EXTRA_LIFE_COUNTDOWN_S = 10.0
+EXTRA_LIFE_COUNTDOWN_S = 5.0
 
 # ---------------------------------------------------------------- Swing timing (is_hit)
 # A swing is matched by its ARRIVAL time on the laptop, in a window around the

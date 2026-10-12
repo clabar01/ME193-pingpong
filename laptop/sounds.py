@@ -22,8 +22,8 @@ WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
   - before every serve: 3, 2, 1                        -> count on each number
       ...GO (the ball is served)                      -> go
   - SLOW-MO card used                                 -> slowmo
-  - I miss with the extra life unused                 -> count (10), then count each
-                                                         second (9 ... 1); no death yet
+  - I miss with the extra life unused                 -> count (5), then count each
+                                                         second (4 ... 1); no death yet
       ...EXTRA LIFE card shown in time                -> life (the rally goes on)
       ...the countdown runs out                       -> death
   - I miss otherwise (the rally ends)                 -> death
