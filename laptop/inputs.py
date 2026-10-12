@@ -133,7 +133,8 @@ class KeyboardStart:
     """Space starts the game at the current level; number keys 1/2/3
     (config.KEY_LEVELS) pick that level and start (like holding up a level
     card); S and L play the
-    SLOW-MO and EXTRA LIFE cards (for testing without printed tags).
+    SLOW-MO and EXTRA LIFE cards (for testing without printed tags); X, P and T
+    stand in for the voice commands "smash", "pause"/"resume" and "score".
 
     The fallback for the AprilTag source (apriltag_input.TagStart), which
     produces the same actions.
@@ -151,6 +152,12 @@ class KeyboardStart:
             self._actions.append(("slowmo", None))       # stand-in for the SLOW-MO card (tag 10)
         elif event.key == pygame.K_l:
             self._actions.append(("extra_life", None))   # stand-in for the EXTRA LIFE card (tag 11)
+        elif event.key == pygame.K_x:
+            self._actions.append(("smash", None))        # stand-in for saying "smash"
+        elif event.key == pygame.K_p:
+            self._actions.append(("pause_toggle", None)) # stand-in for "pause" / "resume"
+        elif event.key == pygame.K_t:
+            self._actions.append(("score", None))        # stand-in for "score" (speaks it)
         elif event.key == pygame.K_SPACE:
             self._actions.append(("start", None))   # None = keep the current level
         elif event.key in self.LEVEL_KEYS and self.LEVEL_KEYS[event.key] in config.LEVELS:

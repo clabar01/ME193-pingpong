@@ -300,7 +300,7 @@ DEBUG_OVERLAY = False
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
 # Which sound when: see the table at the top of sounds.py. Files in
-# assets/sounds/ (hit, tick, record, death, slowmo, life, count, go .wav); missing
+# assets/sounds/ (hit, tick, record, death, slowmo, life, count, go, smash .wav); missing
 # ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
@@ -309,6 +309,41 @@ SOUND_SAMPLE_RATE = 44100    # used if the speaker supports it, else its own rat
 # volley count is at least this (so a fresh session doesn't celebrate hit 1).
 MIN_RECORD_FOR_HIGH_SCORE = 3
 SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
+
+# ---------------------------------------------------------------- Voice commands (voice.py, speech.py)
+# Offline speech recognition with Vosk (small English model, models/ - see
+# README). The recognizer only knows VOICE_COMMANDS; everything else comes
+# out as "unknown" and is ignored. Turn off with --no-voice.
+VOICE_ENABLED = True
+VOICE_MODEL_PATH = "models/vosk-model-small-en-us-0.15"   # relative to the repo root
+VOICE_COMMANDS = ["smash", "play again", "level one", "level two", "level three",
+                  "pause", "resume", "score"]
+VOICE_SAMPLE_RATE = 16000     # what the model expects (the mic is resampled if needed)
+VOICE_COOLDOWN_S = 1.0        # the same command can't trigger twice within this
+# A command counts only if the grammar recognizer heard exactly that phrase
+# (nothing else in the utterance). The STRICT commands, which would disrupt
+# the game if they fired by mistake, must ALSO be heard by a second, free
+# recognizer on the same audio: every word at least VOICE_WORD_MATCH similar
+# (difflib ratio), so near-misses like "play the game" -> "play again" don't
+# fire. The others (smash, resume, score) skip that check, so they still work
+# in a noisy room. Measured on synthesized speech + classroom babble: strict
+# = 0 false triggers in 2 min of chatter but 22% recognized at 10 dB SNR;
+# grammar only = 78% at 10 dB but 5 false triggers (all level / play again).
+VOICE_STRICT_COMMANDS = ["play again", "level one", "level two", "level three", "pause"]
+VOICE_WORD_MATCH = 0.75
+# The game's own sounds must not trigger commands: the mic is ignored while a
+# sound at least VOICE_MUTE_MIN_SOUND_S long is playing (death, jingles, GO,
+# smash...; not the short tick/tock/count beeps) or the laptop is speaking,
+# plus VOICE_MUTE_TAIL_S after.
+VOICE_MUTE_MIN_SOUND_S = 0.15
+VOICE_MUTE_TAIL_S = 0.4
+VOICE_SHOW_S = 1.5            # the last heard command stays on screen this long
+TTS_RATE = 190                # words per minute for "score" (pyttsx3)
+# "smash" (voice power-up): said while the ball is coming to me (after the
+# opponent hit it, before it reaches my paddle) it arms a SMASH for that ball;
+# hitting it sends the return back SMASH_SPEED_FACTOR x faster. Once per rally
+# (comes back with the power-up cards); a missed armed ball just uses it up.
+SMASH_SPEED_FACTOR = 1.5
 
 # ---------------------------------------------------------------- States
 # When a rally ends: the GAME OVER screen (final volley count, best, NEW HIGH

@@ -108,7 +108,7 @@ class Renderer:
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
              mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None,
-             play_again=(False, False)):
+             play_again=(False, False), voice=None):
         """Draw one frame.
 
         paddle_src: the paddle source (camera calibration, tracking).
@@ -117,6 +117,7 @@ class Renderer:
         banner: (text, kind, age s) of the one current message, or None;
                 kind = "good" / "bad" / "power" / "neutral".
         play_again: (a real swing can play again, tags are on).
+        voice: (listener status, (last command, time) or None), or None.
         mqtt_status, swing_info, sound_notes: debug overlay only.
         """
         calib = getattr(paddle_src, "calib_info", None)
@@ -124,6 +125,8 @@ class Renderer:
         self._draw_scene(game)
         if game.state != gs.WAITING:
             self._draw_hud(game)
+            if not self.debug and swing_info is not None:
+                self._draw_swing_force(swing_info)
         # The target box and my paddle go ON TOP of the volley count: both are
         # see-through, so the count stays readable and the paddle stays visible
         # when the ball crosses high (behind the count).
@@ -145,8 +148,12 @@ class Renderer:
             self._draw_extra_life(game)
         elif game.state == gs.GAME_OVER and not miss_flash:
             self._draw_game_over(game, play_again[0])
+        if game.paused:
+            self._draw_paused()
         if banner is not None and banner[2] < banner_length(banner[1], banner[0]):
             self._draw_banner(*banner)
+        if voice is not None:
+            self._draw_voice(*voice, now)
         if camera_error:
             self._center_text(camera_error, self.font, BAD, self.screen.get_height() * 0.9)
         if self.debug:
@@ -180,10 +187,16 @@ class Renderer:
         self.screen.blit(num, num.get_rect(center=(w / 2, 72)))
 
     def _draw_card_icons(self, game: gs.GameState, right_x: float, y: float):
-        """The power-up cards still available this rally, right to left, no
-        labels: a heart (extra life) and a clock (slow-mo; while it runs,
-        dots for the balls left)."""
+        """The power-ups still available this rally, right to left, no labels:
+        a heart (extra life), a clock (slow-mo; while it runs, dots for the
+        balls left) and a bolt (voice SMASH; glowing while armed)."""
         x = right_x
+        if game.smash_armed or not game.smash_used:
+            if game.smash_armed:   # armed: a pulsing ring
+                pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 90)
+                pygame.draw.circle(self.screen, POWER, (x, y + 2), int(17 + 4 * pulse), 2)
+            self._bolt(x, y + 2, POWER)
+            x -= 42
         if not game.extra_life_used:
             self._heart(x, y, 9, POWER)
             x -= 42
@@ -193,6 +206,50 @@ class Renderer:
                 pygame.draw.circle(self.screen, POWER, (x - 8 + i * 8, y + 22), 3)
         elif not game.slowmo_used:
             self._clock(x, y, 13, POWER)
+
+    def _bolt(self, x, y, color):
+        pts = [(x + 3, y - 14), (x - 7, y + 2), (x - 1, y + 2), (x - 4, y + 14), (x + 7, y - 3), (x + 1, y - 3)]
+        pygame.draw.polygon(self.screen, color, pts)
+
+    def _draw_swing_force(self, info: dict):
+        """Bottom right: the last swing's force ("4.2 g") and a small bar, bright
+        for a moment after each swing. (Everything else about swings: debug.)"""
+        if info.get("peak") is None:
+            return
+        w, h = self.screen.get_size()
+        age = info.get("age_s")
+        fresh = age is not None and age < config.SWING_METER_FLASH_S
+        color = TEXT if fresh else FAINT
+        bar = pygame.Rect(w - 30, h - 96, 10, 80)
+        pygame.draw.rect(self.screen, (40, 46, 62), bar, border_radius=4)
+        frac = min(1.0, max(0.0, info["peak"] / config.SWING_METER_MAX_G))
+        fill = pygame.Rect(bar.x, bar.bottom - int(bar.height * frac), bar.width, int(bar.height * frac))
+        pygame.draw.rect(self.screen, GOOD if fresh else FAINT, fill, border_radius=4)
+        label = self.font.render(f"{info['peak']:.1f} g", True, color)
+        self.screen.blit(label, label.get_rect(bottomright=(bar.x - 10, bar.bottom)))
+
+    def _draw_voice(self, status: str, last, now):
+        """Bottom center: a small mic (green = listening, grey = ignoring the
+        game's own sounds, red = no mic / no model) and the last command."""
+        if status == "off":
+            return
+        w, h = self.screen.get_size()
+        x, y = w / 2, h - 30
+        color = {"listening": GOOD, "muted": FAINT, "loading": FAINT}.get(status, BAD)
+        pygame.draw.rect(self.screen, color, (x - 5, y - 13, 10, 17), border_radius=5)
+        pygame.draw.arc(self.screen, color, (x - 9, y - 9, 18, 16), 3.3, 6.1, 2)
+        pygame.draw.line(self.screen, color, (x, y + 7), (x, y + 11), 2)
+        if status in ("no mic", "no model"):
+            pygame.draw.line(self.screen, BAD, (x - 10, y - 14), (x + 10, y + 10), 2)
+        if last is not None and now is not None and now - last[1] < config.VOICE_SHOW_S:
+            text = self.font.render(f'"{last[0]}"', True, TEXT)
+            self.screen.blit(text, text.get_rect(midleft=(x + 18, y - 2)))
+
+    def _draw_paused(self):
+        w, h = self.screen.get_size()
+        self._shade(170)
+        self._center_text("PAUSED", self.big_font, TEXT, h * 0.40)
+        self._center_text('Say "resume" or press P', self.font, DIM_TEXT, h * 0.52)
 
     def _heart(self, x, y, r, color, width=0):
         pygame.draw.circle(self.screen, color, (x - r + 1, y - 3), r, width)
@@ -533,6 +590,8 @@ class Renderer:
         # Slow-mo: the ball takes the power-up color while it lasts
         pygame.draw.circle(self.screen, POWER if game.slowmo_left > 0 else BALL, (sx, sy), r)
         pygame.draw.circle(self.screen, BALL_EDGE, (sx, sy), r, 1)
+        if game.smash_armed:   # voice SMASH armed for this ball: a bright ring
+            pygame.draw.circle(self.screen, POWER, (sx, sy), r + 5, 3)
         if game.holding:
             # Waiting for a late swing: a ring closes in on the ball as the
             # timing window runs out.

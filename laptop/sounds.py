@@ -10,6 +10,7 @@
     count    short beep: each number of the serve countdown (3, 2, 1) and of the
              extra-life countdown
     go       higher, longer beep: GO, the ball is served
+    smash    a sharp crack + whoosh: a SMASH return (voice power-up)
 
 WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
 <reason>", shown on screen and written to data/events_<time>.log):
@@ -22,6 +23,7 @@ WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
   - before every serve: 3, 2, 1                        -> count on each number
       ...GO (the ball is served)                      -> go
   - SLOW-MO card used                                 -> slowmo
+  - a hit with the voice SMASH armed                  -> smash (with the tock)
   - I miss with the extra life unused                 -> count (5), then count each
                                                          second (4 ... 1); no death yet
       ...EXTRA LIFE card shown in time                -> life (the rally goes on)
@@ -52,6 +54,7 @@ turns all of it off (no audio device is even opened).
 import queue
 import sys
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -61,7 +64,7 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count", "go")
+NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count", "go", "smash")
 END_OF_STREAK = ("death",)   # stops everything else and plays alone
 # Peak level of each built-in sound (the tick is meant to sit under the tock)
 PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "go": 0.75, "slowmo": 0.7, "life": 0.8}
@@ -101,6 +104,15 @@ def synthesize(name: str, rate: int) -> np.ndarray:
         wave_ = (np.sin(2 * np.pi * 3200 * t) * np.exp(-t / 0.004)
                  + 0.6 * np.sin(2 * np.pi * 5100 * t) * np.exp(-t / 0.002)
                  + 0.5 * rng.uniform(-1, 1, n) * np.exp(-t / 0.001))
+    elif name == "smash":
+        # A sharp crack (noise burst) and a fast whoosh (falling noisy tone).
+        n = int(rate * 0.35)
+        t = np.arange(n) / rate
+        rng = np.random.default_rng(195)
+        hz = 1800 * (300 / 1800) ** (t / t[-1])
+        phase = 2 * np.pi * np.cumsum(hz) / rate
+        wave_ = (1.4 * rng.uniform(-1, 1, n) * np.exp(-t / 0.012)
+                 + (np.sin(phase) + 0.5 * rng.uniform(-1, 1, n)) * np.exp(-t / 0.12) * np.minimum(1, t / 0.01))
     elif name == "slowmo":
         # A tone gliding down from 900 to 220 Hz over 0.55 s: time slowing down.
         n = int(rate * 0.55)
@@ -234,6 +246,8 @@ class SoundRules:
             out.append(("count", f"serve countdown {game.ready_number}"))
         if gs.EVENT_GO in events:
             out.append(("go", "GO: the ball is served"))
+        if gs.EVENT_SMASH_HIT in events:
+            out.append(("smash", "SMASH: voice smash armed and the ball hit"))
         if gs.EVENT_SLOWMO in events:
             out.append(("slowmo", f"SLOW-MO card: {config.SLOWMO_SPEED:.0%} speed for "
                                   f"{config.SLOWMO_BALLS} balls"))
@@ -258,6 +272,9 @@ class SoundPlayer:
     def __init__(self, muted: bool = None):
         self.muted = config.SOUND_MUTED if muted is None else muted
         self.error = None                # set if the audio device failed (game stays silent)
+        # Until when the voice listener should ignore the mic (a longer game
+        # sound is coming out of the speakers): set by the audio thread.
+        self.voice_mute_until = 0.0
         self._queue = queue.Queue()      # names to play, from the game thread
         self._stop = threading.Event()
         self._thread = None
@@ -268,6 +285,10 @@ class SoundPlayer:
     def play(self, name: str):
         if self._thread is not None and self.error is None:
             self._queue.put(name)
+
+    def voice_muted(self) -> bool:
+        """True while a longer game sound plays (+ tail): the mic must not listen."""
+        return time.monotonic() < self.voice_mute_until
 
     def stop(self):
         self._stop.set()
@@ -309,6 +330,10 @@ class SoundPlayer:
                     if name in END_OF_STREAK:
                         playing.clear()  # the streak is over: this plays alone
                     playing.append([sounds[name], 0])
+                    length = len(sounds[name]) / rate
+                    if length >= config.VOICE_MUTE_MIN_SOUND_S:   # tell the voice listener
+                        self.voice_mute_until = max(self.voice_mute_until, time.monotonic() + length
+                                                    + config.VOICE_MUTE_TAIL_S)
                 if not playing:
                     continue
                 # Mix one chunk of everything that's playing

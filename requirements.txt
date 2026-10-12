@@ -13,3 +13,8 @@ pygame-ce
 pyaudio
 # Advertises the UNO Q over mDNS (tools/advertise_board.py)
 zeroconf
+# Voice commands: Vosk offline speech recognition (+ the small English model in
+# models/, see README) and pyttsx3 text-to-speech for "score" (on macOS it uses
+# the system voice through pyobjc, which pip installs with it)
+vosk
+pyttsx3

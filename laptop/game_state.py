@@ -81,6 +81,11 @@ EVENT_LIFE_OFFER = "life_offer"   # I missed with the extra life unused: countdo
 EVENT_COUNTDOWN = "countdown"     # the countdown shows a new number (countdown_number)
 EVENT_LIFE_USED = "life_used"     # EXTRA LIFE card used: the miss is undone
 EVENT_CARD_REFUSED = "card_refused"   # a card that is used up / not usable now (card_note says why)
+EVENT_SMASH_ARMED = "smash_armed"     # voice "smash": armed for the ball coming to me
+EVENT_SMASH_HIT = "smash_hit"         # ...and I hit it: a SMASH return
+EVENT_SMASH_WASTED = "smash_wasted"   # ...but I missed it: the smash is used up
+EVENT_PAUSE = "pause"
+EVENT_RESUME = "resume"
 
 
 @dataclass
@@ -185,6 +190,12 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #     logged), but while the card is unused the game pauses for
 #     EXTRA_LIFE_COUNTDOWN_S; showing the card in time undoes the miss, so the
 #     volley count goes on. Otherwise the miss ends the rally.
+#   - SMASH (voice command, armed while the ball is coming to me) changes only
+#     what happens AFTER a hit: the return flies SMASH_SPEED_FACTOR x faster.
+#     It needs the same hit as any other ball (paddle in the zone + a real
+#     swing in the window); a missed armed ball is a normal miss.
+#   - PAUSE (voice) freezes the game; it is refused while a ball waits at the
+#     paddle for a swing, so it can never move a ball's timing window.
 #
 # Why this is fair: a swing alone never scores (the paddle must have been on
 # the ball's path at contact time), and the paddle alone never scores (there
@@ -444,6 +455,11 @@ class GameState:
         self._shot_pace = 1.0         # time scale of the shot in the air (see pace)
         self._phys_carry = 0.0        # game time not yet simulated (< PHYSICS_DT)
         self._miss_record = None      # CSV row of the ball an extra life could rescue
+        # Voice power-up "smash" (once per rally, like the cards)
+        self.smash_used = False
+        self.smash_armed = False      # armed for the ball now coming to me
+        self.paused = False           # voice "pause" / "resume" (or P)
+        self._voice_heard = []        # voice commands since the last contact (CSV)
 
     # ------------------------------------------------------------ controls
     @property
@@ -536,6 +552,8 @@ class GameState:
         self._best_before_rally = self.best_streak
         self.slowmo_used = self.extra_life_used = False
         self.slowmo_left = 0
+        self.smash_used = self.smash_armed = False
+        self.paused = False
         self.opponent.params = self.params["opponent"]
         return self._serve()
 
@@ -600,6 +618,37 @@ class GameState:
         out, self.ball_results = self.ball_results, []
         return out
 
+    # ------------------------------------------------------------ voice commands
+    def arm_smash(self) -> list:
+        """Voice "smash": arms a SMASH for the ball coming to me (after the
+        opponent hit it, before it reaches my paddle). Hitting that ball sends
+        it back SMASH_SPEED_FACTOR x faster; missing it just uses it up. Once
+        per rally (it comes back with the power-up cards)."""
+        if self.smash_used:
+            return self._refuse("SMASH already used")
+        if self.state != PLAYING or self.paused or not self.coming_to_me or self.holding:
+            return self._refuse("SMASH: say it while the ball is coming to you")
+        self.smash_used = self.smash_armed = True
+        return [EVENT_SMASH_ARMED]
+
+    def pause(self) -> list:
+        """Voice "pause" (or P): freeze the rally. Not while a ball is at the
+        paddle waiting for a swing (that would shift the swing timing window)."""
+        if self.paused or self.state not in (PLAYING, READY) or self.holding:
+            return []
+        self.paused = True
+        return [EVENT_PAUSE]
+
+    def resume(self) -> list:
+        if not self.paused:
+            return []
+        self.paused = False
+        return [EVENT_RESUME]
+
+    def note_voice(self, command: str):
+        """A voice command was heard (logged on the next ball's CSV row)."""
+        self._voice_heard.append(command)
+
     def reset_best(self) -> list:
         """Reset the record. Mid-rally, the record restarts from the current streak."""
         self.best_streak = self.streak
@@ -625,6 +674,8 @@ class GameState:
         latest move the IMU rejected (diagnostics only). Returns events."""
         dt = min(dt, config.MAX_DT)
         self._now = now
+        if self.paused:
+            return []          # frozen: no time passes for the ball, the opponent or a countdown
         # Slow-mo: the ball and the opponent run on game time, which runs at
         # SLOWMO_SPEED while it's active. (The swing window and the paddle's
         # look-back use real time: the player doesn't slow down.)
@@ -742,7 +793,12 @@ class GameState:
             self.last_swing_offset = swing.arrival - self._contact_time_used
             self.last_return_factor = return_speed_factor(swing.peak)
             self.ball_results.append(self._record("hit", None, swing))
-            self._my_return(self.last_return_factor)
+            factor = self.last_return_factor
+            if self.smash_armed:                  # voice SMASH: a faster return
+                self.smash_armed = False
+                factor *= config.SMASH_SPEED_FACTOR
+                events.append(EVENT_SMASH_HIT)
+            self._my_return(factor)
             self.streak += 1
             events.append(EVENT_HIT)
             if self.streak > self.best_streak:
@@ -781,7 +837,10 @@ class GameState:
                               "tracking_ok": self.tracking_ok, "tracking": self.tracking,
                               "window": self._window, "volley": self.streak,
                               "speed_x": self.speed_factor,
-                              "powerup": "slowmo" if self.slowmo_left > 0 else ""}
+                              "powerup": "slowmo" if self.slowmo_left > 0 else "",
+                              "smash": self.smash_armed,
+                              "voice": ";".join(self._voice_heard)}
+        self._voice_heard = []
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
@@ -945,6 +1004,10 @@ class GameState:
             # Power-up on this ball: "slowmo" (played in slow motion), "extra_life"
             # (a miss the card undid), or both
             "powerup": info.get("powerup", ""),
+            # Voice: was this ball played with a SMASH armed (with result: hit
+            # = smash return, miss = wasted), and the commands heard before it
+            "smash": "yes" if info.get("smash") else "",
+            "voice": info.get("voice", ""),
         }
 
     def flush_results(self):
@@ -956,15 +1019,19 @@ class GameState:
     def _miss_or_offer_life(self) -> list:
         """I missed. With the extra life unused: pause and count down (the
         EXTRA LIFE card can undo the miss). Otherwise the rally ends now."""
+        wasted = []
+        if self.smash_armed:            # missed the armed ball: the smash is used up
+            self.smash_armed = False
+            wasted = [EVENT_SMASH_WASTED]
         if self.extra_life_used:
-            return self._my_miss()
+            return wasted + self._my_miss()
         self.state = EXTRA_LIFE
         self.countdown_left = config.EXTRA_LIFE_COUNTDOWN_S
         self._count_shown = self.countdown_number
         self.holding = False
         self.contact_time = None
         self.target = None
-        return [EVENT_LIFE_OFFER, EVENT_COUNTDOWN]
+        return wasted + [EVENT_LIFE_OFFER, EVENT_COUNTDOWN]
 
     def _my_miss(self) -> list:
         """The rally is over (a miss, after any extra-life countdown): GAME OVER."""
@@ -972,6 +1039,8 @@ class GameState:
         # Fresh cards for the next rally (whether or not they were used, and
         # whether a timed-out extra life counts as spent doesn't matter)
         self.slowmo_used = self.extra_life_used = False
+        self.smash_used = self.smash_armed = False     # the voice smash comes back too
+        self.paused = False
         self.state = GAME_OVER
         self.game_over_at = self._now if self._now is not None else 0.0
         self.last_rally = self.streak

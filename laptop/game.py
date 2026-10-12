@@ -28,6 +28,8 @@ import game_state as gs
 import inputs
 import mqtt_client
 import sounds
+import speech
+import voice
 
 
 def make_sources(args, start_x: float, start_y: float):
@@ -101,7 +103,30 @@ def apply_actions(game, actions, paddle_ready: bool) -> list:
             events += game.use_slowmo()
         elif action == "extra_life":
             events += game.use_extra_life()
+        elif action == "smash":
+            events += game.arm_smash()
+        elif action == "pause":
+            events += game.pause()
+        elif action == "resume":
+            events += game.resume()
+        elif action == "pause_toggle":
+            events += game.resume() if game.paused else game.pause()
     return events
+
+
+# Voice command -> game action (see voice.py). Menu commands only act on the
+# screens where they make sense; GameState refuses the rest at the wrong time.
+VOICE_ACTIONS = {"smash": ("smash", None), "pause": ("pause", None), "resume": ("resume", None),
+                 "level one": ("start", 0), "level two": ("start", 1), "level three": ("start", 2)}
+
+
+def voice_actions(command: str, game) -> list:
+    """The actions for a voice command ("score" is handled by game.py: it speaks)."""
+    if command == "play again":        # = a swing on the GAME OVER screen
+        return [("start", None)] if game.state == gs.GAME_OVER else []
+    if command.startswith("level") and game.state not in (gs.WAITING, gs.GAME_OVER):
+        return []
+    return [VOICE_ACTIONS[command]] if command in VOICE_ACTIONS else []
 
 
 def main():
@@ -115,6 +140,8 @@ def main():
                         help="ignore the paddle IMU: every ball counts as swung")
     parser.add_argument("--debug", action="store_true",
                         help="start with the debug overlay on (D toggles it)")
+    parser.add_argument("--no-voice", action="store_true",
+                        help="no voice commands (no microphone, no text-to-speech)")
     parser.add_argument("--no-publish", action="store_true",
                         help="never publish the record to the score topic (for testing)")
     args = parser.parse_args()
@@ -151,6 +178,11 @@ def main():
     key_src = inputs.KeyboardStart()       # Space / 1-2-3: always available as a fallback
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
     sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
+    # Voice commands: Vosk on the mic in its own thread; it ignores the mic while
+    # a game sound plays or the laptop speaks (text-to-speech in its own process)
+    voice_on = config.VOICE_ENABLED and not args.no_voice
+    speaker = speech.Speaker(enabled=voice_on)
+    listener = voice.VoiceListener(enabled=voice_on, mute_sources=[player.voice_muted, lambda: speaker.busy])
     sound_notes = []                       # (time, "name: reason") shown on screen
     # ONE message at a time: the newest replaces the old (see draw.py)
     banner = None                          # (text, kind, start time); kind good / bad / power / neutral
@@ -175,6 +207,18 @@ def main():
                     paddle_src.handle_event(event)   # e.g. C = recalibrate the camera
 
             actions = key_src.poll()
+            for command, heard, _ in listener.poll():     # voice commands
+                game.note_voice(command)                  # (CSV: commands before each ball)
+                actions += [("score", None)] if command == "score" else voice_actions(command, game)
+            for _, line in listener.poll_log():
+                print(line)
+                event_log.write(line)
+            if any(a == "score" for a, _ in actions):      # "score": say it out loud
+                count = game.last_rally if game.state == gs.GAME_OVER else game.streak
+                text = f"{count} volleys. Best {game.best_streak}."
+                speaker.say(text)
+                event_log.write(f"SPEAK {text!r}")
+                actions = [a for a in actions if a[0] != "score"]
             menu = game.state in (gs.WAITING, gs.GAME_OVER)   # level / reset tags count here
             if tag_src is not None:
                 # On GAME_OVER a level tag's hold only counts once playing again is allowed
@@ -214,6 +258,8 @@ def main():
                 banner = ("SLOW-MO!", "power", now)
             if gs.EVENT_LIFE_USED in events:
                 banner = ("EXTRA LIFE!", "power", now)
+            if gs.EVENT_SMASH_HIT in events:
+                banner = ("SMASH!", "power", now)
             if gs.EVENT_CARD_REFUSED in events and game.card_note:
                 used = "already used" in game.card_note[0]
                 banner = ("ALREADY USED" if used else "NOT NOW", "neutral", now)
@@ -258,7 +304,8 @@ def main():
                           swing_info=swing_display(swing_src, mqtt, now),
                           sound_notes=[s for _, s in sound_notes],
                           banner=None if banner is None else (banner[0], banner[1], now - banner[2]),
-                          now=now, play_again=("imu" in swing_src.kind, tag_src is not None))
+                          now=now, play_again=("imu" in swing_src.kind, tag_src is not None),
+                          voice=(listener.status, listener.last))
             pygame.display.flip()
     finally:
         game.flush_results()
@@ -273,6 +320,8 @@ def main():
             camera.stop()
         if mqtt is not None:
             mqtt.stop()
+        listener.stop()
+        speaker.stop()
         player.stop()
         pygame.quit()
 

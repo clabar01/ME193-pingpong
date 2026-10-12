@@ -14,3 +14,5 @@ The camera view shows a drawn stand-in figure instead of the webcam picture.
 | `6_extra_life.png` | EXTRA LIFE? countdown |
 | `7_game_over.png` | GAME OVER with a new high score |
 | `8_debug_overlay.png` | Debug overlay (D): state, speed, tracking, sounds, MQTT, swing meter |
+| `9_voice_smash_armed.png` | Voice "smash" armed: ring on the ball, glowing bolt, mic with the last command, swing force "4.2 g" |
+| `10_voice_paused.png` | Voice "pause" |
