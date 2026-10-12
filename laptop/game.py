@@ -27,6 +27,7 @@ import draw
 import game_state as gs
 import inputs
 import mqtt_client
+import sounds
 
 
 def make_sources(args, start_x: float, start_y: float):
@@ -134,6 +135,8 @@ def main():
     else:
         swing_src = inputs.LatestSwing(inputs.ImuSwing(mqtt), inputs.KeyboardSwing())
     key_src = inputs.KeyboardStart()       # Space / 0-2: always available as a fallback
+    player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
+    record_cheered = False                 # victory sound already played this rally?
 
     running = True
     try:
@@ -172,8 +175,18 @@ def main():
             while game.ball_results:
                 log.add(game.ball_results.pop(0))
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
-            if shown:   # for sounds later
+            if shown:
                 print(f"streak={game.streak} best={game.best_streak} events={shown}")
+            # Sounds: the fanfare once per rally when the record is first beaten
+            # (every later hit of that rally is also a "record"), else a hit sound.
+            if gs.EVENT_RECORD in events and not record_cheered:
+                player.play("victory")
+                record_cheered = True
+            elif gs.EVENT_HIT in events:
+                player.play("hit")
+            if gs.EVENT_MISS in events:
+                player.play("death")
+                record_cheered = False
             if mqtt is not None:
                 mqtt.update(game)   # record (when it goes up) + game state at 10 Hz
 
@@ -199,6 +212,7 @@ def main():
             camera.stop()
         if mqtt is not None:
             mqtt.stop()
+        player.stop()
         pygame.quit()
 
 
