@@ -20,6 +20,10 @@ camera, so the hand position comes from the best thing MediaPipe can see:
            measured the last time the wrist was visible
   "elbow"  else the elbow, plus the last seen elbow->wrist offset (forearm)
   "hold"   nothing usable: the paddle stays put, for up to TRACK_HOLD_S
+  "card"   the hand found is on or next to an AprilTag in view (within
+           CARD_GUARD_MARGIN): that's the free hand holding a card (MediaPipe
+           can mix up the two wrists), so it is ignored and the paddle stays
+           put, as for "hold"
   "lost"   after that: paddle frozen, "no hand" shown
 Using the offsets measured from the real wrist keeps the paddle from jumping
 when the source changes.
@@ -52,7 +56,7 @@ STALE_S = 0.5
 
 # Colors of each tracking source (camera view dot and on-screen badge)
 SOURCE_COLORS = {"wrist": (90, 230, 120), "hand": (255, 200, 60), "elbow": (255, 150, 50),
-                 "hold": (255, 150, 50), "lost": (220, 60, 70)}
+                 "hold": (255, 150, 50), "card": (110, 170, 255), "lost": (220, 60, 70)}
 
 
 @dataclass
@@ -182,8 +186,9 @@ class CameraPaddle:
     kind = "camera"
 
     def __init__(self, pose: PoseProcessor, camera=None,
-                 start_x: float = 0.0, start_y: float = 0.3):
+                 start_x: float = 0.0, start_y: float = 0.3, tags=None):
         self.pose = pose
+        self.tags = tags       # apriltag_input.TagProcessor, for the card guard (or None)
         self.camera = camera   # only used to report camera errors
         self.x = start_x   # paddle position in the hitting plane (m)
         self.y = start_y
@@ -234,11 +239,14 @@ class CameraPaddle:
         r = self.pose.latest()
         self._reading = r
         fresh = r is not None and r.wrist_x is not None and now - r.time < STALE_S
+        near_card = fresh and self._near_tag(r.wrist_x, r.wrist_y, now)
+        if near_card:
+            fresh = False             # the hand holding a card: don't follow it
         if fresh:
             self._last_seen = now
             self.tracking = r.source or "wrist"
         elif self._last_seen is not None and now - self._last_seen <= config.TRACK_HOLD_S:
-            self.tracking = "hold"    # brief dropout: keep the paddle where it is
+            self.tracking = "card" if near_card else "hold"   # keep the paddle where it is
         else:
             self.tracking = "lost"
         self.has_hand = self.tracking != "lost"
@@ -262,6 +270,16 @@ class CameraPaddle:
         # each frame, which smooths out MediaPipe's frame-to-frame jitter.
         self.x += config.SMOOTHING_ALPHA * (target_x - self.x)
         self.y += config.SMOOTHING_ALPHA * (target_y - self.y)
+
+    def _near_tag(self, x: float, y: float, now: float) -> bool:
+        """Is (x, y) (mirrored image fractions) on or within CARD_GUARD_MARGIN
+        of an AprilTag seen in the latest camera frame?"""
+        reading = self.tags.latest() if self.tags is not None else None
+        if reading is None or not reading.boxes or now - reading.time > STALE_S:
+            return False
+        m = config.CARD_GUARD_MARGIN
+        return any(x0 - m <= x <= x1 + m and y0 - m <= y <= y1 + m
+                   for x0, y0, x1, y1 in reading.boxes.values())
 
     def draw_on_preview(self, surf: pygame.Surface):
         """On the camera view: the calibrated range (shaded outside, green edges
@@ -302,7 +320,7 @@ class CameraPaddle:
                 tag = font.render(self.tracking, True, (0, 0, 0), color)
                 surf.blit(tag, (wx + 14, wy - 8))
         else:
-            msg = font.render("hold" if self.tracking == "hold" else "no hand", True,
+            msg = font.render({"hold": "hold", "card": "hand at card: ignored"}.get(self.tracking, "no hand"), True,
                               (255, 255, 255), (200, 50, 60))
             surf.blit(msg, (w / 2 - msg.get_width() / 2, h / 2 - 10))
 

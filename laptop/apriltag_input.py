@@ -1,4 +1,5 @@
-"""AprilTags: hold up a printed tag to pick the level and start, or to reset the record.
+"""AprilTags: hold up a printed tag to pick the level and start, to reset the
+record, or to play a power-up card (10 = SLOW-MO, 11 = EXTRA LIFE).
 
 Two parts:
 
@@ -32,6 +33,7 @@ LABEL_FG = (255, 255, 255)
 BAR_BG = (40, 40, 40)
 BAR_FG = (120, 220, 140)
 BAR_RESET = (255, 110, 110)
+BAR_CARD = (110, 170, 255)
 
 
 def tag_meaning(tag_id: int) -> str:
@@ -41,13 +43,23 @@ def tag_meaning(tag_id: int) -> str:
         return f"Level {level}: {config.LEVELS[level]['name']}"
     if tag_id == config.TAG_RESET_BEST:
         return "Reset best"
+    if tag_id == config.TAG_SLOWMO:
+        return "SLOW-MO card"
+    if tag_id == config.TAG_EXTRA_LIFE:
+        return "EXTRA LIFE card"
     return "unused"
+
+
+CARDS = {config.TAG_SLOWMO: "slowmo", config.TAG_EXTRA_LIFE: "extra_life"}   # tag -> action
 
 
 @dataclass
 class TagReading:
     ids: list      # tag IDs seen in this frame
     time: float    # time.monotonic() when the frame was processed
+    # Each tag's box in the MIRRORED image, as fractions (x0, y0, x1, y1):
+    # used to ignore a "wrist" that is really the hand holding a card.
+    boxes: dict = None
 
 
 class TagProcessor:
@@ -71,19 +83,23 @@ class TagProcessor:
         # invalid pattern), then mirror the corners for drawing.
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
         corners, ids, _ = self._detector.detectMarkers(gray)
-        seen = []
+        seen, boxes = [], {}
         if ids is not None:
             w = preview.shape[1]
+            fh, fw = gray.shape
             for tag_corners, tag_id in zip(corners, ids.ravel()):
                 tag_id = int(tag_id)
                 seen.append(tag_id)
                 pts = tag_corners[0].copy()
+                raw = tag_corners[0]
+                boxes[tag_id] = (1 - raw[:, 0].max() / fw, raw[:, 1].min() / fh,
+                                 1 - raw[:, 0].min() / fw, raw[:, 1].max() / fh)
                 pts[:, 0] = (w - 1) - pts[:, 0]   # mirror x
                 cv2.polylines(preview, [pts.astype(np.int32)], True, OUTLINE, 4)
                 x, y = pts[:, 0].min(), pts[:, 1].min()
                 self._label(preview, f"ID {tag_id}  {tag_meaning(tag_id)}", int(x), int(y) - 10)
         with self._lock:
-            self._latest = TagReading(seen, now)
+            self._latest = TagReading(seen, now, boxes)
 
     def close(self):
         pass
@@ -105,6 +121,13 @@ class TagStart:
       ("level", n)   a level tag just came into view: show that level
       ("start", n)   a level tag was held for TAG_HOLD_S: start at level n
       ("reset", None) the reset tag was held for TAG_HOLD_S: reset best_streak
+      ("slowmo", None) / ("extra_life", None)
+                     a power-up card was held for POWERUP_HOLD_S (GameState
+                     decides if it can be used: once per game, right moment)
+
+    Level and reset tags only count on the WAITING screen: during a game they
+    are ignored completely (no bar, no action), so a stray card can't change
+    the level or wipe the record. Cards count in every state.
 
     "Held" means the same tag stayed in view, allowing gaps shorter than
     TAG_DROPOUT_S (detection flickers). Each hold acts once; take the tag away
@@ -124,16 +147,29 @@ class TagStart:
         """0..1: how far the current hold is toward acting."""
         if self.current is None or self._fired:
             return 1.0 if self._fired else 0.0
-        return min(1.0, (time.monotonic() - self._since) / config.TAG_HOLD_S)
+        return min(1.0, (time.monotonic() - self._since) / self._hold_s(self.current))
 
-    def update(self, can_start: bool = True):
+    @staticmethod
+    def _hold_s(tag_id: int) -> float:
+        return config.POWERUP_HOLD_S if tag_id in CARDS else config.TAG_HOLD_S
+
+    def rearm(self, tag_id: int):
+        """Let a card that is still being held act again (e.g. the EXTRA LIFE
+        card was already up when the miss happened)."""
+        if self.current == tag_id and self._fired:
+            self._fired = False
+            self._since = time.monotonic()
+
+    def update(self, can_start: bool = True, waiting: bool = True):
         """can_start: False while the game can't start (playing, or the camera
         paddle isn't calibrated). A level tag's hold doesn't count down then,
-        so the bar doesn't fill for nothing; it starts counting once allowed."""
+        so the bar doesn't fill for nothing; it starts counting once allowed.
+        waiting: True on the WAITING screen; False during a game, when level
+        and reset tags are ignored."""
         now = time.monotonic()
         reading = self.tags.latest()
         useful = [t for t in (reading.ids if reading else [])
-                  if t in config.TAG_LEVELS or t == config.TAG_RESET_BEST]
+                  if t in CARDS or (waiting and (t in config.TAG_LEVELS or t == config.TAG_RESET_BEST))]
         fresh = reading is not None and now - reading.time < config.TAG_DROPOUT_S
 
         if fresh and useful and (self.current in useful):
@@ -146,10 +182,13 @@ class TagStart:
         if self.current in config.TAG_LEVELS and not can_start and not self._fired:
             self._since = now                          # hold the countdown at 0
 
-        if (self.current is not None and not self._fired
-                and now - self._since >= config.TAG_HOLD_S):
+        allowed = self.current in CARDS or waiting   # level/reset tags: WAITING only
+        if (self.current is not None and allowed and not self._fired
+                and now - self._since >= self._hold_s(self.current)):
             self._fired = True
-            if self.current == config.TAG_RESET_BEST:
+            if self.current in CARDS:
+                self._actions.append((CARDS[self.current], None))
+            elif self.current == config.TAG_RESET_BEST:
                 self._actions.append(("reset", None))
             else:
                 self._actions.append(("start", config.TAG_LEVELS[self.current]))
@@ -167,7 +206,8 @@ class TagStart:
         pygame.draw.rect(surf, BAR_BG, bar)
         fill = bar.copy()
         fill.width = int(bar.width * self.progress)
-        color = BAR_RESET if self.current == config.TAG_RESET_BEST else BAR_FG
+        color = (BAR_RESET if self.current == config.TAG_RESET_BEST
+                 else BAR_CARD if self.current in CARDS else BAR_FG)
         pygame.draw.rect(surf, color, fill)
         pygame.draw.rect(surf, (255, 255, 255), bar, 1)
 

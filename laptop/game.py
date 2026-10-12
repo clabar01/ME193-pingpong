@@ -55,7 +55,8 @@ def make_sources(args, start_x: float, start_y: float):
         camera.start()
 
     if pose is not None:
-        paddle_src = pose_input.CameraPaddle(pose, camera=camera, start_x=start_x, start_y=start_y)
+        paddle_src = pose_input.CameraPaddle(pose, camera=camera, start_x=start_x, start_y=start_y,
+                                             tags=tags)
     else:
         paddle_src = inputs.KeyboardPaddle(start_x=start_x, start_y=start_y)
     tag_src = apriltag_input.TagStart(tags) if tags is not None else None
@@ -79,17 +80,25 @@ def swing_display(swing_src, mqtt, now: float) -> dict:
 
 
 def apply_actions(game, actions, paddle_ready: bool) -> list:
-    """Apply ("level" | "start" | "reset", value) actions from keyboard or tags."""
+    """Apply actions from keyboard or tags: ("level" | "start" | "reset", value)
+    only on the WAITING screen (a stray card mid-game can't change the level
+    or wipe the record); ("slowmo" | "extra_life", None) power-up cards any
+    time (GameState decides if they can be used now)."""
     events = []
+    waiting = game.state == gs.WAITING
     for action, value in actions:
-        if action == "level" and game.state == gs.WAITING:
+        if action == "level" and waiting:
             game.set_level(value)
-        elif action == "start" and game.state == gs.WAITING and paddle_ready:
+        elif action == "start" and waiting and paddle_ready:
             if value is not None:
                 game.set_level(value)
             events += game.start()
-        elif action == "reset":
+        elif action == "reset" and waiting:
             events += game.reset_best()
+        elif action == "slowmo":
+            events += game.use_slowmo()
+        elif action == "extra_life":
+            events += game.use_extra_life()
     return events
 
 
@@ -139,7 +148,7 @@ def main():
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
     sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
     sound_notes = []                       # (time, "name: reason") shown on screen
-    high_score_at = None                   # when the HIGH SCORE banner started (with the chime)
+    banner = None                          # (text, kind, start time): HIGH SCORE! / SLOW-MO! / EXTRA LIFE!
 
     running = True
     try:
@@ -160,7 +169,8 @@ def main():
 
             actions = key_src.poll()
             if tag_src is not None:
-                tag_src.update(can_start=game.state == gs.WAITING and paddle_src.ready)
+                tag_src.update(can_start=game.state == gs.WAITING and paddle_src.ready,
+                               waiting=game.state == gs.WAITING)
                 actions += tag_src.poll()
             streak_before = game.streak            # (a miss resets it; the sound rules need it)
             events = apply_actions(game, actions, paddle_src.ready)
@@ -176,8 +186,14 @@ def main():
             game.swing_window = config.SWING_WINDOW_SLOW if slow else config.SWING_WINDOW_FAST
             rejected = mqtt.last_rejected if mqtt is not None and swing_src.kind != "always" else None
             events += game.update(dt, now, swing_src.last_swing(now), rejected)
-            while game.ball_results:
-                log.add(game.ball_results.pop(0))
+            for record in game.take_results():   # (held back during the extra-life countdown)
+                log.add(record)
+            if gs.EVENT_LIFE_OFFER in events and tag_src is not None:
+                tag_src.rearm(config.TAG_EXTRA_LIFE)   # card already up when I missed: let it count
+            if gs.EVENT_SLOWMO in events:
+                banner = ("SLOW-MO!", "slowmo", now)
+            if gs.EVENT_LIFE_USED in events:
+                banner = ("EXTRA LIFE!", "life", now)
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
             if shown:
                 line = f"streak={game.streak} best={game.best_streak} events={shown}"
@@ -190,7 +206,7 @@ def main():
                 line = f"SOUND {name}: {reason}"
                 event_log.write(line)
                 if name == "record":
-                    high_score_at = now    # the banner goes with the chime (same rule)
+                    banner = ("HIGH SCORE!", "record", now)   # the banner goes with the chime (same rule)
                 if name != "tick":         # ticks: in the log only (two per shot)
                     print(line)
                     sound_notes.append((now, f"{name}: {reason}"))
@@ -208,7 +224,8 @@ def main():
                           mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()),
                           swing_info=swing_display(swing_src, mqtt, now),
                           sound_notes=[s for _, s in sound_notes],
-                          high_score_age=None if high_score_at is None else now - high_score_at)
+                          banner=None if banner is None else (banner[0], banner[1], now - banner[2]),
+                          now=now)
             pygame.display.flip()
     finally:
         game.flush_results()

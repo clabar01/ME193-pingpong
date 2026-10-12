@@ -123,7 +123,8 @@ class LatestSwing:
 
 
 class KeyboardStart:
-    """Space starts the game; number keys 0-2 pick the level.
+    """Space starts the game; number keys 0-2 pick the level; S and L play the
+    SLOW-MO and EXTRA LIFE cards (for testing without printed tags).
 
     The fallback for the AprilTag source (apriltag_input.TagStart), which
     produces the same actions.
@@ -138,7 +139,11 @@ class KeyboardStart:
     def handle_event(self, event):
         if event.type != pygame.KEYDOWN:
             return
-        if event.key == pygame.K_SPACE:
+        if event.key == pygame.K_s:
+            self._actions.append(("slowmo", None))       # stand-in for the SLOW-MO card (tag 10)
+        elif event.key == pygame.K_l:
+            self._actions.append(("extra_life", None))   # stand-in for the EXTRA LIFE card (tag 11)
+        elif event.key == pygame.K_SPACE:
             self._actions.append(("start", None))   # None = keep the current level
         elif event.key in self.LEVEL_KEYS and self.LEVEL_KEYS[event.key] in config.LEVELS:
             self._actions.append(("level", self.LEVEL_KEYS[event.key]))

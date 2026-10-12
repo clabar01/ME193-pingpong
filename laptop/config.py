@@ -174,6 +174,9 @@ FALLBACK_MIN_VISIBILITY = 0.5   # same test for the knuckles / elbow
 # Nothing usable at all: the paddle holds its last position this long (still
 # counts as tracked), then tracking is "lost" (paddle frozen, "no hand").
 TRACK_HOLD_S = 0.3
+# A hand found within this (fraction of the frame) of an AprilTag in view is
+# the free hand holding a card, not the paddle hand: ignored (paddle holds).
+CARD_GUARD_MARGIN = 0.10
 # Smoothing (exponential moving average) of the paddle position:
 #   paddle += SMOOTHING_ALPHA * (target - paddle)   every frame
 # 1.0 = no smoothing (jittery but instant); smaller = smoother but laggier.
@@ -196,12 +199,37 @@ CAMERA_PREVIEW_WIDTH = 320   # size of the camera view drawn in the game window
 TAG_FAMILY = "tag36h11"
 TAG_LEVELS = {0: 0, 1: 1, 2: 2}   # tag ID -> level (key of LEVELS)
 TAG_RESET_BEST = 5                # tag ID that resets best_streak
+# Level and reset tags only act on the WAITING screen: during a game (playing,
+# the MISS pause, the extra-life countdown) they are ignored, so a stray card
+# can't change the level or wipe the record.
 # A tag must be seen continuously this long to act (start / reset), so a
 # tag that's just passing by the camera does nothing.
 TAG_HOLD_S = 1.0
 # Detection flickers: a tag that drops out for less than this still counts as
 # "continuously seen".
 TAG_DROPOUT_S = 0.25
+
+# ---------------------------------------------------------------- Power-up cards (AprilTags)
+# Each card works once per game (both come back when a new game starts from
+# the WAITING screen). Showing a used card only shows "already used".
+# Keyboard stand-ins for testing: S = slow-mo, L = extra life.
+POWERUP_HOLD_S = 0.3         # a card must be held this long to act (shorter than TAG_HOLD_S)
+CARD_NOTE_S = 1.5            # "already used" / "not now" messages stay this long
+CARD_FLASH_S = 1.0           # the LED matrix shows S / L this long when a card activates
+# Tag 10 = SLOW-MO: only while PLAYING. The ball (and the opponent) move at
+# SLOWMO_SPEED x the current, ramped-up speed for the next SLOWMO_BALLS balls
+# that reach my paddle (the ball in the air when it's shown counts as the
+# first if it's coming to me), then everything is back at the ramp's speed.
+# The swing timing window stays in real time.
+TAG_SLOWMO = 10
+SLOWMO_SPEED = 0.5
+SLOWMO_BALLS = 3
+# Tag 11 = EXTRA LIFE: when I miss and it's unused, the game pauses with a
+# countdown; showing the card before it runs out undoes the miss (the volley
+# count and the ramp continue, a new ball is served). Once used, misses end
+# the rally at once.
+TAG_EXTRA_LIFE = 11
+EXTRA_LIFE_COUNTDOWN_S = 5.0
 
 # ---------------------------------------------------------------- Swing timing (is_hit)
 # A swing is matched by its ARRIVAL time on the laptop, in a window around the
@@ -247,20 +275,18 @@ SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
 
 # ---------------------------------------------------------------- Score display (draw.py)
 SCORE_POP_S = 0.3              # the volley count pops (grows, then settles) this long on each hit
-HIGH_SCORE_BANNER_S = 2.0      # "HIGH SCORE!" banner when the count passes the record
+HIGH_SCORE_BANNER_S = 2.0      # banners ("HIGH SCORE!", "SLOW-MO!", "EXTRA LIFE!") stay this long
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
 # Which sound when: see the table at the top of sounds.py. Files in
-# assets/sounds/ (hit, tick, record, death, victory .wav); missing
+# assets/sounds/ (hit, tick, record, death, slowmo, life, count .wav); missing
 # ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
 SOUND_SAMPLE_RATE = 44100    # used if the speaker supports it, else its own rate
-# A new record gets the "record" chime + HIGH SCORE banner (when the volley
-# count passes it) and the victory fanfare (when that rally ends) only if it
-# is at least this long; a shorter one just gets the hit tock and, at the
-# end, the death song.
-MIN_RECORD_FOR_FANFARE = 3
+# Passing the record gets the "record" chime + HIGH SCORE banner only if the
+# volley count is at least this (so a fresh session doesn't celebrate hit 1).
+MIN_RECORD_FOR_HIGH_SCORE = 3
 SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
 
 # ---------------------------------------------------------------- States

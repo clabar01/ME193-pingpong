@@ -4,29 +4,34 @@
     tick     shorter, lighter, higher "tick" when the ball bounces on the table
     record   short bell chime: the volley count just passed the record (mid-rally,
              with the HIGH SCORE banner)
-    death    "sad trombone" wah-wah-wah-waaah: I missed, no new record
-    victory  rising fanfare: I missed, but the rally that just ended is a new record
+    death    "sad trombone" wah-wah-wah-waaah: the rally ended (I missed)
+    slowmo   a falling "whoooop": SLOW-MO card used
+    life     a quick rising four-note jingle: EXTRA LIFE card used
+    count    short beep: each second of the extra-life countdown
 
 WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
 <reason>", shown on screen and written to data/events_<time>.log):
   - ball bounces on the table (either side)          -> tick
   - my paddle hits the ball                           -> hit (tock)
       ...and that hit first takes the volley count past the record of when
-      the rally started, and the count is >= MIN_RECORD_FOR_FANFARE
+      the rally started, and the count is >= MIN_RECORD_FOR_HIGH_SCORE
                                                       -> also record (chime) + the HIGH
                                                          SCORE banner, once per rally
-  - I miss (the rally ends):
-      its volley count is a new record (above the record of when it
-      started) and >= MIN_RECORD_FOR_FANFARE          -> victory INSTEAD of death
-      otherwise                                       -> death
+  - SLOW-MO card used                                 -> slowmo
+  - I miss with the extra life unused                 -> count (5), then count each
+                                                         second (4, 3, 2, 1); no death yet
+      ...EXTRA LIFE card shown in time                -> life (the rally goes on)
+      ...the countdown runs out                       -> death
+  - I miss otherwise (the rally ends)                 -> death
   - anything else (game start, new serve, the opponent's returns, level
-    change, calibration, record reset, the record loading from MQTT) -> nothing
+    change, calibration, record reset, the record loading from MQTT, a card
+    that is used up or not usable now)                -> nothing
 The opponent never misses, so a rally runs from the serve until I miss and
 its volley count is my streak.
 
 Adapted from the Whistling World Cup project (Lego/world_cup/songs.py): the
-same note table, harmonics + attack/release envelope, and the same death and
-victory melodies, synthesized with numpy.
+same note table, harmonics + attack/release envelope, and the same death
+melody, synthesized with numpy.
 
 Each sound is loaded from assets/sounds/<name>.wav if that file exists, else
 synthesized. To use your own sound, replace the .wav file (any sample rate,
@@ -37,7 +42,7 @@ mono or stereo, 8/16/32-bit PCM). Regenerate the default files with:
 One background thread owns the speaker: it keeps one output stream open and
 mixes whatever is playing in short chunks (SOUND_CHUNK samples), so a hit can
 play over a chime, and play() returns at once. The end-of-streak sounds
-(death, victory) stop everything else and play alone. config.SOUND_MUTED = True
+(death) stops everything else and plays alone. config.SOUND_MUTED = True
 turns all of it off (no audio device is even opened).
 """
 import queue
@@ -52,10 +57,10 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "tick", "record", "death", "victory")
-END_OF_STREAK = ("death", "victory")   # these stop everything else and play alone
+NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count")
+END_OF_STREAK = ("death",)   # stops everything else and plays alone
 # Peak level of each built-in sound (the tick is meant to sit under the tock)
-PEAK = {"tick": 0.4, "record": 0.8}
+PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "slowmo": 0.7, "life": 0.8}
 SOUND_CHUNK = 512      # samples per write: ~12 ms at 44.1 kHz (latency of a new sound)
 
 _NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6,
@@ -74,9 +79,9 @@ def note_hz(name: str) -> float:
 # (note, seconds), as in the World Cup project. The last death note wobbles
 # (vibrato) like a trombone.
 SONGS = {
-    "victory": [("C5", .12), ("E5", .12), ("G5", .12), ("C6", .28), ("R", .06),
-                ("G5", .12), ("C6", .55), ("R", .1), ("E6", .15), ("D6", .15), ("C6", .7)],
     "death":   [("G4", .38), ("F#4", .38), ("F4", .38), ("E4", 1.3)],
+    "life":    [("C6", .06), ("E6", .06), ("G6", .06), ("C7", .22)],
+    "count":   [("A5", .09)],
 }
 
 
@@ -91,6 +96,14 @@ def synthesize(name: str, rate: int) -> np.ndarray:
         wave_ = (np.sin(2 * np.pi * 3200 * t) * np.exp(-t / 0.004)
                  + 0.6 * np.sin(2 * np.pi * 5100 * t) * np.exp(-t / 0.002)
                  + 0.5 * rng.uniform(-1, 1, n) * np.exp(-t / 0.001))
+    elif name == "slowmo":
+        # A tone gliding down from 900 to 220 Hz over 0.55 s: time slowing down.
+        n = int(rate * 0.55)
+        t = np.arange(n) / rate
+        hz = 900 * (220 / 900) ** (t / t[-1])                  # exponential glide
+        phase = 2 * np.pi * np.cumsum(hz) / rate
+        env = np.minimum(1, t / 0.02) * np.minimum(1, (t[-1] - t) / 0.12)
+        wave_ = (np.sin(phase) + 0.3 * np.sin(2 * phase)) * env
     elif name == "record":
         # A bell, two quick strikes (E6 then B6): a different timbre from the
         # melodies, so it can't be mistaken for the fanfare.
@@ -200,7 +213,7 @@ class SoundRules:
             self.old_record, self.chimed = game.best_streak, False
         elif game.best_streak > max(self.old_record, game.streak, streak_before):
             self.old_record = game.best_streak
-        minimum = config.MIN_RECORD_FOR_FANFARE
+        minimum = config.MIN_RECORD_FOR_HIGH_SCORE
         for _ in range(events.count(gs.EVENT_BOUNCE)):
             side = "my" if game.last_bounce and game.last_bounce[1] < config.TABLE_LENGTH / 2 else "their"
             out.append(("tick", f"ball bounced on {side} side"))
@@ -210,17 +223,21 @@ class SoundRules:
                 out.append(("record", f"HIGH SCORE: volley {game.streak} passed the record "
                                       f"(old {self.old_record})"))
                 self.chimed = True
-        if gs.EVENT_MISS in events:
+        if gs.EVENT_SLOWMO in events:
+            out.append(("slowmo", f"SLOW-MO card: {config.SLOWMO_SPEED:.0%} speed for "
+                                  f"{config.SLOWMO_BALLS} balls"))
+        if gs.EVENT_COUNTDOWN in events:
+            out.append(("count", f"extra life countdown {game.countdown_number}"))
+        if gs.EVENT_LIFE_USED in events:
+            out.append(("life", f"EXTRA LIFE card: the miss is undone, volley {game.streak} goes on"))
+        if gs.EVENT_MISS in events:     # the rally ended (after any countdown)
             ended = streak_before
-            if ended > self.old_record and ended >= minimum:
-                out.append(("victory", f"rally ended with new record {ended} (old {self.old_record})"))
-            else:
-                why = (game.miss_text or "miss").split("\n")[0].lower()
-                if ended > self.old_record:      # a new record, but too short for the fanfare
-                    why += f", {ended} volleys (record {self.old_record}, fanfare needs >= {minimum})"
-                elif ended:
-                    why += f", {ended} volleys"
-                out.append(("death", f"player miss, {why}"))
+            why = (game.miss_text or "miss").split("\n")[0].lower()
+            if ended:
+                why += f", {ended} volleys"
+                if ended > self.old_record:
+                    why += f" (new record, old {self.old_record})"
+            out.append(("death", f"player miss, {why}"))
             self.old_record = max(self.old_record, game.best_streak)
             self.chimed = False
         return out

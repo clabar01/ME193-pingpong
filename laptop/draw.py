@@ -30,8 +30,11 @@ ZONE_OFF = (255, 170, 60)     # target zone, paddle not in it yet
 ZONE_ON = (90, 230, 120)      # target zone, paddle center inside: in position
 TARGET_LOCK_S = 0.25          # "lock-on" animation when the target locks (ball bounced)
 STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
-                gs.MISS: (255, 110, 110)}
+                gs.MISS: (255, 110, 110), gs.EXTRA_LIFE: (255, 120, 160)}
 GOLD = (255, 205, 70)
+SLOWMO_BLUE = (110, 170, 255)
+HEART = (255, 90, 130)
+BANNER_COLORS = {"record": GOLD, "slowmo": SLOWMO_BLUE, "life": HEART}
 
 
 def P(x, y, z):
@@ -54,7 +57,7 @@ class Renderer:
         self._lock_time = None       # game_time the current target locked
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_status=None, swing_info=None, sound_notes=None, high_score_age=None):
+             mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
@@ -73,8 +76,12 @@ class Renderer:
             self._draw_swing_meter(game, swing_info)
         if sound_notes:
             self._draw_sound_notes(sound_notes)
-        if high_score_age is not None and high_score_age < config.HIGH_SCORE_BANNER_S:
-            self._draw_high_score(high_score_age)
+        if game.state == gs.EXTRA_LIFE:
+            self._draw_countdown(game)
+        if now is not None and game.card_note and now - game.card_note[1] < config.CARD_NOTE_S:
+            self._center_text(game.card_note[0], self.font, CALIBRATE, self.screen.get_height() * 0.62)
+        if banner is not None and banner[2] < config.HIGH_SCORE_BANNER_S:
+            self._draw_banner(*banner)
 
     def _draw_sound_notes(self, notes):
         """Last few sounds and why they played (left, under the tracking badge)."""
@@ -82,17 +89,36 @@ class Renderer:
             surf = self.small_font.render(f"sound {text}", True, DIM_TEXT)
             self.screen.blit(surf, (20, 118 + 22 * i))
 
-    def _draw_high_score(self, age: float):
-        """Big "HIGH SCORE!" banner, popping in, then fading out."""
+    def _draw_countdown(self, game: gs.GameState):
+        """Extra-life offer: the game is paused, a big number counts down."""
+        w, h = self.screen.get_size()
+        shade = pygame.Surface((w, h), pygame.SRCALPHA)
+        shade.fill((8, 10, 20, 170))
+        self.screen.blit(shade, (0, 0))
+        self._center_text("EXTRA LIFE?  Show your card!", self.big_font, HEART, h * 0.30)
+        cx, cy = w / 2, h * 0.58
+        # A ring that empties over each second, around the number
+        frac = game.countdown_left - int(game.countdown_left)
+        pygame.draw.circle(self.screen, (60, 40, 55), (cx, cy), 95, 10)
+        if frac > 0:
+            pygame.draw.arc(self.screen, HEART, (cx - 95, cy - 95, 190, 190),
+                            1.5708, 1.5708 + 6.2832 * frac, 10)
+        num = self.score_font.render(str(game.countdown_number), True, (255, 255, 255))
+        self.screen.blit(num, num.get_rect(center=(cx, cy)))
+        self._center_text(f"volley count {game.streak} is waiting", self.small_font, DIM_TEXT, h * 0.76)
+
+    def _draw_banner(self, text: str, kind: str, age: float):
+        """Big banner ("HIGH SCORE!", "SLOW-MO!", "EXTRA LIFE!"), popping in, then fading out."""
         w = self.screen.get_width()
         grow = min(1.0, age / 0.15)                                  # pops in over 0.15 s
         fade = min(1.0, (config.HIGH_SCORE_BANNER_S - age) / 0.4)    # fades over the last 0.4 s
-        text = self.big_font.render("HIGH SCORE!", True, GOLD)
+        color = BANNER_COLORS.get(kind, GOLD)
+        text = self.big_font.render(text, True, color)
         scale = 0.6 + 0.4 * grow
         text = pygame.transform.smoothscale_by(text, scale)
         text.set_alpha(int(255 * fade))
         panel = pygame.Surface((w, text.get_height() + 24), pygame.SRCALPHA)
-        panel.fill((40, 26, 0, int(170 * fade)))
+        panel.fill((color[0] // 6, color[1] // 6, color[2] // 6, int(170 * fade)))   # dark tint of the text color
         y = 190
         self.screen.blit(panel, (0, y - panel.get_height() / 2))
         self.screen.blit(text, text.get_rect(center=(w / 2, y)))
@@ -236,7 +262,8 @@ class Renderer:
         b = game.ball
         sx, sy = P(b.x, b.y, b.z)
         r = max(2, view3d.size(config.BALL_RADIUS_M, b.z))
-        pygame.draw.circle(self.screen, BALL, (sx, sy), r)
+        # Slow-mo: the ball is tinted blue while it lasts
+        pygame.draw.circle(self.screen, (150, 200, 255) if game.slowmo_left > 0 else BALL, (sx, sy), r)
         pygame.draw.circle(self.screen, BALL_EDGE, (sx, sy), r, 1)
         if game.holding:
             # Waiting for a late swing: a ring closes in on the ball as the
@@ -339,6 +366,7 @@ class Renderer:
 
         w = self.screen.get_width()
         self._draw_volleys(game)
+        self._draw_card_icons(game)
         # Best (smaller, top right) and the rally's speed: "Speed x1.40" + bar
         best = self.font.render(f"Best: {game.best_streak}", True, TEXT)
         self.screen.blit(best, (w - best.get_width() - 20, 14))
@@ -352,6 +380,23 @@ class Renderer:
             color = GOLD if frac >= 1 else (255, int(200 - 120 * frac), 80)   # warmer as it speeds up
             pygame.draw.rect(self.screen, color, (bar.x, bar.y, max(8, int(bar.width * frac)), bar.height),
                              border_radius=4)
+
+    def _draw_card_icons(self, game: gs.GameState):
+        """Top right, left of Best: a heart while the extra life is available,
+        and a blue slow-mo badge with the balls left while slow-mo is on."""
+        x, y = self.screen.get_width() - 205, 34
+        if not game.extra_life_used:
+            r = 8      # heart = two circles + a triangle
+            pygame.draw.circle(self.screen, HEART, (x - r + 1, y - 3), r)
+            pygame.draw.circle(self.screen, HEART, (x + r - 1, y - 3), r)
+            pygame.draw.polygon(self.screen, HEART, [(x - 2 * r + 1, y), (x + 2 * r - 1, y), (x, y + 2 * r)])
+            x -= 75
+        if game.slowmo_left > 0:
+            pygame.draw.circle(self.screen, SLOWMO_BLUE, (x, y + 2), 15)
+            s_ = self.small_font.render("S", True, (10, 20, 40))
+            self.screen.blit(s_, s_.get_rect(center=(x, y + 3)))
+            left = self.small_font.render(f"x{game.slowmo_left}", True, SLOWMO_BLUE)
+            self.screen.blit(left, (x + 19, y - 6))
 
     def _draw_volleys(self, game: gs.GameState):
         """The volley count, big at the top center: pops on every hit. During
@@ -412,9 +457,10 @@ class Renderer:
             # Small fixed badge (top left, under the level): how the hand is being found
             labels = {"wrist": "tracking: wrist", "hand": "tracking: fallback (knuckles)",
                       "elbow": "tracking: fallback (elbow)", "hold": "tracking: holding last position",
+                      "card": "tracking: ignoring the hand at the card",
                       "lost": "tracking: LOST (paddle frozen)"}
             colors = {"wrist": (40, 140, 70), "hand": (170, 120, 20), "elbow": (170, 90, 20),
-                      "hold": (170, 90, 20), "lost": (200, 50, 60)}
+                      "hold": (170, 90, 20), "card": (50, 90, 170), "lost": (200, 50, 60)}
             text = self.small_font.render(f"  {labels.get(src.tracking, src.tracking)}  ", True,
                                           (255, 255, 255))
             box = text.get_rect(topleft=(24, 84))

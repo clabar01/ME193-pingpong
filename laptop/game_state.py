@@ -25,6 +25,17 @@ speed_factor / aim_spread / zone_scale, values in config.py):
 A miss resets the volley count, so everything goes back to the level's
 starting values. The level (AprilTag 0/1/2) sets the starting speed and how
 fast it ramps.
+
+POWER-UP CARDS (AprilTags 10 and 11, each once per game; use_slowmo(),
+use_extra_life()):
+  - SLOW-MO: while playing, the ball and the opponent move at SLOWMO_SPEED x
+    their current speed until SLOWMO_BALLS balls have reached my paddle
+    (game time runs slower; the ramp keeps counting, so afterwards the speed
+    is where the ramp would be).
+  - EXTRA LIFE: a miss pauses the game in the EXTRA_LIFE state with an
+    EXTRA_LIFE_COUNTDOWN_S countdown; showing the card in time undoes the miss
+    (volley count and ramp continue, new serve). If the time runs out, or the
+    card was already used, the miss ends the rally as usual.
 """
 import math
 import random
@@ -37,10 +48,13 @@ import config
 # States of the game.
 #   WAITING: before a game starts (waiting for Space / an AprilTag)
 #   PLAYING: the ball is in play (including a short wait for a late swing)
+#   EXTRA_LIFE: I missed with my extra life unused: paused, counting down;
+#            the EXTRA LIFE card undoes the miss, else it becomes a MISS
 #   MISS:    I missed; pause, then a new serve (volley count and ramp reset)
 # (The opponent never misses, so there is no state for that.)
 WAITING = "WAITING"
 PLAYING = "PLAYING"
+EXTRA_LIFE = "EXTRA_LIFE"
 MISS = "MISS"
 
 # Events returned by GameState.update(), for sounds and MQTT to react to.
@@ -51,6 +65,11 @@ EVENT_SERVE = "serve"
 EVENT_BEST_RESET = "best_reset"   # best_streak was reset (AprilTag 5)
 EVENT_BOUNCE = "bounce"           # ball bounced on the table
 EVENT_OPP_HIT = "opp_hit"         # the opponent returned the ball (it always does)
+EVENT_SLOWMO = "slowmo"           # SLOW-MO card used
+EVENT_LIFE_OFFER = "life_offer"   # I missed with the extra life unused: countdown starts
+EVENT_COUNTDOWN = "countdown"     # the countdown shows a new number (countdown_number)
+EVENT_LIFE_USED = "life_used"     # EXTRA LIFE card used: the miss is undone
+EVENT_CARD_REFUSED = "card_refused"   # a card that is used up / not usable now (card_note says why)
 
 
 @dataclass
@@ -145,6 +164,16 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #
 # The opponent never misses, so a rally only ends with a miss of mine; the
 # score is how many hits in a row I made (the volley count).
+#
+# The power-up cards don't change these three checks:
+#   - SLOW-MO only slows the ball (game time runs at SLOWMO_SPEED for the
+#     next SLOWMO_BALLS balls). Contact, the paddle look-back and the swing
+#     timing window are still measured in real time, so the same swing
+#     timing works; the slower ball just gives more time to get there.
+#   - EXTRA LIFE comes after the rule: the miss still happens (and is
+#     logged), but while the card is unused the game pauses for
+#     EXTRA_LIFE_COUNTDOWN_S; showing the card in time undoes the miss, so the
+#     volley count goes on. Otherwise the miss ends the rally.
 #
 # Why this is fair: a swing alone never scores (the paddle must have been on
 # the ball's path at contact time), and the paddle alone never scores (there
@@ -387,6 +416,16 @@ class GameState:
         self._pending_miss = None     # miss record waiting to see if a late swing turns up
         self._rejected = None         # latest rejected move (from update())
 
+        # Power-up cards (both reset by start())
+        self.slowmo_used = False
+        self.slowmo_left = 0          # balls still to reach my paddle in slow motion
+        self.extra_life_used = False
+        self.countdown_left = 0.0     # s left in the EXTRA_LIFE countdown
+        self._count_shown = 0
+        self.card_note = None         # (text, time) e.g. "SLOW-MO card already used"
+        self.card_flash = None        # (letter, time) for the LED matrix: "S" / "L"
+        self._miss_record = None      # CSV row of the ball an extra life could rescue
+
     # ------------------------------------------------------------ controls
     @property
     def params(self) -> dict:
@@ -451,13 +490,69 @@ class GameState:
             self.opponent.params = config.LEVELS[level]["opponent"]
 
     def start(self) -> list:
-        """WAITING -> PLAYING. Returns events."""
+        """WAITING -> PLAYING. Returns events. A new game: both cards are back."""
         if self.state != WAITING:
             return []
         self.streak = 0
+        self.slowmo_used = self.extra_life_used = False
+        self.slowmo_left = 0
         self.opponent.params = self.params["opponent"]
         self._serve()
         return [EVENT_SERVE]
+
+    # ------------------------------------------------------------ power-up cards
+    @property
+    def countdown_number(self) -> int:
+        """5, 4, 3, 2, 1 during the EXTRA_LIFE countdown (0 otherwise)."""
+        return math.ceil(self.countdown_left - 1e-9) if self.state == EXTRA_LIFE else 0
+
+    @property
+    def time_scale(self) -> float:
+        """How fast the ball and the opponent move: SLOWMO_SPEED in slow-mo."""
+        return config.SLOWMO_SPEED if self.slowmo_left > 0 else 1.0
+
+    def use_slowmo(self) -> list:
+        """SLOW-MO card shown (held POWERUP_HOLD_S). Only while PLAYING, once per game."""
+        if self.slowmo_used:
+            return self._refuse("SLOW-MO card already used")
+        if self.state != PLAYING:
+            return self._refuse("SLOW-MO works during a rally")
+        self.slowmo_used = True
+        self.slowmo_left = config.SLOWMO_BALLS
+        self.card_flash = ("S", self._now or 0.0)
+        return [EVENT_SLOWMO]
+
+    def use_extra_life(self) -> list:
+        """EXTRA LIFE card shown. Only during the countdown after a miss, once
+        per game: undoes the miss (volley count and ramp continue), new serve."""
+        if self.extra_life_used:
+            return self._refuse("EXTRA LIFE card already used")
+        if self.state != EXTRA_LIFE:
+            return self._refuse("EXTRA LIFE: show it when you miss")
+        self.extra_life_used = True
+        self.countdown_left = 0.0
+        self.card_flash = ("L", self._now or 0.0)
+        # Log it on the ball it saved
+        if self._contact_info is not None:
+            self._contact_info["powerup"] = "+".join(
+                x for x in (self._contact_info.get("powerup"), "extra_life") if x)
+        if self._miss_record is not None:
+            self._miss_record["powerup"] = (self._contact_info or {}).get("powerup", "extra_life")
+        self.miss_text = None
+        self._serve()
+        return [EVENT_LIFE_USED, EVENT_SERVE]
+
+    def _refuse(self, text: str) -> list:
+        self.card_note = (text, self._now or 0.0)
+        return [EVENT_CARD_REFUSED]
+
+    def take_results(self) -> list:
+        """Finished balls for the CSV log. Held back during the extra-life
+        countdown, so the missed ball's row can still say if the card saved it."""
+        if self.state == EXTRA_LIFE:
+            return []
+        out, self.ball_results = self.ball_results, []
+        return out
 
     def reset_best(self) -> list:
         """Reset the record. Mid-rally, the record restarts from the current streak."""
@@ -484,7 +579,11 @@ class GameState:
         latest move the IMU rejected (diagnostics only). Returns events."""
         dt = min(dt, config.MAX_DT)
         self._now = now
-        self.game_time += dt
+        # Slow-mo: the ball and the opponent run on game time, which runs at
+        # SLOWMO_SPEED while it's active. (The swing window and the paddle's
+        # look-back use real time: the player doesn't slow down.)
+        game_dt = dt * self.time_scale
+        self.game_time += game_dt
         events = []
         if swing is not None and swing.arrival == self._used_swing:
             swing = None   # already used for a hit: each swing counts once
@@ -495,6 +594,18 @@ class GameState:
 
         self._rejected = rejected
         self._watch_for_late_swing(swing, now)
+
+        if self.state == EXTRA_LIFE:
+            # Paused: only the countdown runs (use_extra_life() ends it early)
+            self.countdown_left -= dt
+            if self.countdown_left <= 0:
+                self.countdown_left = 0.0
+                self.state = PLAYING          # (so _my_miss ends the rally normally)
+                events += self._my_miss()
+            elif 0 < self.countdown_number < self._count_shown:   # 4, 3, 2, 1 (never 0)
+                self._count_shown = self.countdown_number
+                events.append(EVENT_COUNTDOWN)
+            return events
 
         if self.state == MISS:
             if not self.holding:
@@ -509,7 +620,7 @@ class GameState:
         if self.state != PLAYING:
             return events
 
-        self.opponent.step(dt, self.game_time)
+        self.opponent.step(game_dt, self.game_time)
         if self.holding:
             # Ball pressed into my paddle: slow it down smoothly (no gravity),
             # sinking at most HOLD_MAX_SINK_M past the hitting plane so it
@@ -524,11 +635,11 @@ class GameState:
             # Physics in small fixed substeps (PHYSICS_DT), so bounces and the
             # crossing spot don't depend on the frame rate, and match the
             # target prediction (predict_crossing_xy uses the same step).
-            n = max(1, math.ceil(dt / config.PHYSICS_DT - 1e-9))
+            n = max(1, math.ceil(game_dt / config.PHYSICS_DT - 1e-9))
             for _ in range(n):
                 b = self.ball
                 x_before, y_before, z_before = b.x, b.y, b.z
-                if step_ball(b, dt / n):
+                if step_ball(b, game_dt / n):
                     events.append(EVENT_BOUNCE)
                     self.last_bounce = (b.x, b.z, self.game_time)
                     if b.z < config.TABLE_LENGTH / 2:
@@ -548,8 +659,10 @@ class GameState:
                     if b.y < -0.5:   # fell off without a proper bounce
                         self._contact_info = None
                         self.miss_text = "NO CONTACT"
-                        self.ball_results.append(self._record("miss", REASON_NO_CONTACT, None))
-                        events += self._my_miss()
+                        self._miss_record = self._record("miss", REASON_NO_CONTACT, None)
+                        self.ball_results.append(self._miss_record)
+                        self.slowmo_left = max(0, self.slowmo_left - 1)
+                        events += self._miss_or_offer_life()
                         break
                 elif z_before < config.OPP_HIT_Z <= b.z or b.y < -0.5:
                     events += self._opponent_turn()
@@ -563,6 +676,7 @@ class GameState:
         if verdict is None:
             return events                     # keep waiting for a late swing
         self.holding = False
+        self.slowmo_left = max(0, self.slowmo_left - 1)   # one more ball played in slow-mo
         self.contact_time = None
         self.target = None
         if verdict:
@@ -580,7 +694,7 @@ class GameState:
             b = self.ball
             b.vx, b.vy, b.vz = self._held_velocity   # drop past me
             self._explain_miss(swing, now)
-            events += self._my_miss()
+            events += self._miss_or_offer_life()
         return events
 
     # ------------------------------------------------------------ rally steps
@@ -608,7 +722,8 @@ class GameState:
                               "off_x_m": off_x, "off_y_m": off_y, "tol_x_m": tol_x, "tol_y_m": tol_y,
                               "tracking_ok": self.tracking_ok, "tracking": self.tracking,
                               "window": self._window, "volley": self.streak,
-                              "speed_x": self.speed_factor}
+                              "speed_x": self.speed_factor,
+                              "powerup": "slowmo" if self.slowmo_left > 0 else ""}
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
@@ -683,7 +798,8 @@ class GameState:
             if not info["tracking_ok"]:
                 detail += "  (hand lost)"
             self.miss_text = f"OUT OF ZONE\n{detail}"
-            self.ball_results.append(self._record("miss", REASON_OUT_OF_ZONE, None))
+            self._miss_record = self._record("miss", REASON_OUT_OF_ZONE, None)
+            self.ball_results.append(self._miss_record)
             return
         opens = contact - info["window"][0]
         closes = contact + info["window"][1]
@@ -702,6 +818,7 @@ class GameState:
             record = self._record("miss", REASON_NO_SWING, None)
         # A late swing may still arrive (network delay): keep watching.
         self._pending_miss = (record, contact + config.LATE_SWING_WATCH_S)
+        self._miss_record = record
 
     def _watch_for_late_swing(self, swing: Optional[Swing], now: float):
         """After a timing miss: a swing arriving after the window closed relabels
@@ -754,6 +871,9 @@ class GameState:
             "tracking": info.get("tracking"),
             "hand_tracked": info.get("tracking_ok"),
             "rejected_why": "" if swing is None or not swing.failed else "; ".join(swing.failed),
+            # Power-up on this ball: "slowmo" (played in slow motion), "extra_life"
+            # (a miss the card undid), or both
+            "powerup": info.get("powerup", ""),
         }
 
     def flush_results(self):
@@ -762,7 +882,21 @@ class GameState:
             self.ball_results.append(self._pending_miss[0])
             self._pending_miss = None
 
+    def _miss_or_offer_life(self) -> list:
+        """I missed. With the extra life unused: pause and count down (the
+        EXTRA LIFE card can undo the miss). Otherwise the rally ends now."""
+        if self.extra_life_used:
+            return self._my_miss()
+        self.state = EXTRA_LIFE
+        self.countdown_left = config.EXTRA_LIFE_COUNTDOWN_S
+        self._count_shown = self.countdown_number
+        self.holding = False
+        self.contact_time = None
+        self.target = None
+        return [EVENT_LIFE_OFFER, EVENT_COUNTDOWN]
+
     def _my_miss(self) -> list:
+        self.slowmo_left = 0      # the rally is over: slow-mo ends too
         self.state = MISS
         self.pause_timer = config.MISS_PAUSE_S
         self.last_rally = self.streak
