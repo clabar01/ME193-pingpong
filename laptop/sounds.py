@@ -1,6 +1,7 @@
 """Game sounds through pyaudio, on their own thread (the game never waits).
 
     hit      short "tock" on every hit
+    tick     shorter, lighter, higher "tick" when the ball bounces on the table
     death    "sad trombone" wah-wah-wah-waaah on a miss
     victory  rising fanfare on a new record
 
@@ -32,7 +33,9 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "death", "victory")
+NAMES = ("hit", "tick", "death", "victory")
+# Peak level of each built-in sound (the tick is meant to sit under the tock)
+PEAK = {"tick": 0.4}
 SOUND_CHUNK = 512      # samples per write: ~12 ms at 44.1 kHz (latency of a new sound)
 
 _NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6,
@@ -58,8 +61,17 @@ SONGS = {
 
 
 def synthesize(name: str, rate: int) -> np.ndarray:
-    """A sound as float samples in -1..1 (peak 0.9)."""
-    if name == "hit":
+    """A sound as float samples in -1..1 (peak 0.9, or PEAK[name])."""
+    if name == "tick":
+        # Ball on the table: higher and much shorter than the paddle tock,
+        # mostly click, and quieter (PEAK).
+        n = int(rate * 0.035)
+        t = np.arange(n) / rate
+        rng = np.random.default_rng(194)
+        wave_ = (np.sin(2 * np.pi * 3200 * t) * np.exp(-t / 0.004)
+                 + 0.6 * np.sin(2 * np.pi * 5100 * t) * np.exp(-t / 0.002)
+                 + 0.5 * rng.uniform(-1, 1, n) * np.exp(-t / 0.001))
+    elif name == "hit":
         # A short "tock": two high tones that die away in a few ms, plus a tiny
         # noise click at the start, like a ball on a paddle.
         n = int(rate * 0.09)
@@ -91,7 +103,7 @@ def synthesize(name: str, rate: int) -> np.ndarray:
             env[n - r:] *= np.linspace(1, 0, r)
             out.append(w * env)
         wave_ = np.concatenate(out)
-    return 0.9 * wave_ / np.max(np.abs(wave_))
+    return PEAK.get(name, 0.9) * wave_ / np.max(np.abs(wave_))
 
 
 def write_wav(path: Path, samples: np.ndarray, rate: int):

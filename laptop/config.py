@@ -225,9 +225,9 @@ SWING_METER_MAX_G = 6.0        # top of the meter
 SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
-# Hit: short "tock". Miss: the "death" song. New record: the victory fanfare
+# Hit: short "tock". Bounce on the table: lighter "tick". Miss: the "death" song. New record: the victory fanfare
 # (once per rally, when the old record is first beaten). Files in
-# assets/sounds/ (hit.wav, death.wav, victory.wav); missing ones are synthesized.
+# assets/sounds/ (hit.wav, tick.wav, death.wav, victory.wav); missing ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
 SOUND_SAMPLE_RATE = 44100    # used if the speaker supports it, else its own rate

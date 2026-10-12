@@ -187,6 +187,8 @@ def main():
             if gs.EVENT_MISS in events:
                 player.play("death")
                 record_cheered = False
+            if gs.EVENT_BOUNCE in events:
+                player.play("tick")      # ball on the table, either side
             if mqtt is not None:
                 mqtt.update(game)   # record (when it goes up) + game state at 10 Hz
 
