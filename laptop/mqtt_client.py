@@ -12,7 +12,8 @@ Two topics:
       About GAME_PUBLISH_HZ times a second, JSON for the UNO Q LED matrix:
       {"state": "PLAYING", "level": 1, "streak": 3, "x": 0.512, "y": 0.233, "h": 0.31}
       plus "count": 10..1 during the EXTRA_LIFE countdown or 3, 2, 1 during the
-      serve countdown (state READY), and "flash": "S"/"L" for CARD_FLASH_S after
+      serve countdown (state READY), "final": the final volley count on the
+      GAME_OVER screen, and "flash": "S"/"L" for CARD_FLASH_S after
       a SLOW-MO / EXTRA LIFE card activates, "GO" for SERVE_GO_SHOW_S at GO.
       x, y = ball position seen from above the table, 0..1 (x: 0 = left edge,
       1 = right; y: 0 = the opponent's end, 1 = my end); h = height above the
@@ -220,6 +221,8 @@ class GameMqtt:
             msg["count"] = game.countdown_number      # 10..1: the LED matrix shows it
         elif game.state == gs.READY:
             msg["count"] = game.ready_number          # serve countdown 3, 2, 1
+        elif game.state == gs.GAME_OVER:
+            msg["final"] = game.last_rally            # the GAME OVER screen's final score
         flash = game.card_flash
         if flash is not None and time.monotonic() - flash[1] < config.CARD_FLASH_S:
             msg["flash"] = flash[0]                   # "S" / "L": a card just activated

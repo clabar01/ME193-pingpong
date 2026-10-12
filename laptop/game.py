@@ -81,11 +81,13 @@ def swing_display(swing_src, mqtt, now: float) -> dict:
 
 def apply_actions(game, actions, paddle_ready: bool) -> list:
     """Apply actions from keyboard or tags: ("level" | "start" | "reset", value)
-    only on the WAITING screen (a stray card mid-game can't change the level
-    or wipe the record); ("slowmo" | "extra_life", None) power-up cards any
-    time (GameState decides if they can be used now)."""
+    only on the WAITING or GAME_OVER screen (a stray card mid-game can't
+    change the level or wipe the record; "start" on GAME_OVER = play again,
+    which GameState.start() refuses for the first GAME_OVER_SWING_IGNORE_S);
+    ("slowmo" | "extra_life", None) power-up cards any time (GameState decides
+    if they can be used now)."""
     events = []
-    waiting = game.state == gs.WAITING
+    waiting = game.state in (gs.WAITING, gs.GAME_OVER)
     for action, value in actions:
         if action == "level" and waiting:
             game.set_level(value)
@@ -164,14 +166,23 @@ def main():
                 key_src.handle_event(event)
                 if game.state == gs.PLAYING:
                     swing_src.handle_event(event)    # Space = swing (keyboard paddle)
-                if game.state == gs.WAITING:
+                if game.state in (gs.WAITING, gs.GAME_OVER):
                     paddle_src.handle_event(event)   # e.g. C = recalibrate the camera
 
             actions = key_src.poll()
+            menu = game.state in (gs.WAITING, gs.GAME_OVER)   # level / reset tags count here
             if tag_src is not None:
-                tag_src.update(can_start=game.state == gs.WAITING and paddle_src.ready,
-                               waiting=game.state == gs.WAITING)
+                # On GAME_OVER a level tag's hold only counts once playing again is allowed
+                can_start = (paddle_src.ready and (game.state == gs.WAITING or game.can_play_again))
+                tag_src.update(can_start=can_start, waiting=menu)
                 actions += tag_src.poll()
+            # GAME OVER: a real paddle swing (IMU) after the ignore time plays
+            # again at the same level. (Not with --no-imu, where every moment
+            # counts as a swing; Space plays again via the keyboard actions.)
+            if game.can_play_again and "imu" in swing_src.kind:
+                swing = swing_src.last_swing(now)
+                if swing is not None and swing.arrival >= game.game_over_at + config.GAME_OVER_SWING_IGNORE_S:
+                    actions.append(("start", None))
             streak_before = game.streak            # (a miss resets it; the sound rules need it)
             events = apply_actions(game, actions, paddle_src.ready)
 
@@ -197,6 +208,11 @@ def main():
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
             if shown:
                 line = f"streak={game.streak} best={game.best_streak} events={shown}"
+                print(line)
+                event_log.write(line)
+            if gs.EVENT_GAME_OVER in events:
+                line = (f"GAME OVER: final score {game.last_rally} volleys, level {game.level}, "
+                        f"best {game.best_streak}" + (", NEW HIGH SCORE" if game.new_high_score else ""))
                 print(line)
                 event_log.write(line)
             # Sounds: SoundRules decides (rules at the top of sounds.py); every
@@ -225,7 +241,7 @@ def main():
                           swing_info=swing_display(swing_src, mqtt, now),
                           sound_notes=[s for _, s in sound_notes],
                           banner=None if banner is None else (banner[0], banner[1], now - banner[2]),
-                          now=now)
+                          now=now, play_again=("imu" in swing_src.kind, tag_src is not None))
             pygame.display.flip()
     finally:
         game.flush_results()

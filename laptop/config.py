@@ -297,8 +297,14 @@ MIN_RECORD_FOR_HIGH_SCORE = 3
 SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
 
 # ---------------------------------------------------------------- States
-MISS_PAUSE_S = 1.0          # pause in MISS before the next serve's countdown
-# Before EVERY serve (game start, after a miss, after an extra life): a big
+# When a rally ends: the GAME OVER screen (final volley count, best, NEW HIGH
+# SCORE!). Play again with a swing (same level), a level tag (that level) or
+# Space; swings and Space are ignored for the first GAME_OVER_SWING_IGNORE_S
+# (the last swing's follow-through). Nobody plays for GAME_OVER_IDLE_S ->
+# back to the WAITING screen.
+GAME_OVER_SWING_IGNORE_S = 2.0
+GAME_OVER_IDLE_S = 60.0
+# Before EVERY serve (game start, playing again, after an extra life): a big
 # "3, 2, 1, GO!" on screen and the LED matrix, a beep per number and a
 # higher beep on GO. The ball is served at GO.
 SERVE_COUNT_FROM = 3        # counts 3, 2, 1

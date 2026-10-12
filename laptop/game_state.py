@@ -52,18 +52,23 @@ import config
 #   READY:   "3, 2, 1, GO!" before every serve; the ball is served at GO
 #   PLAYING: the ball is in play (including a short wait for a late swing)
 #   EXTRA_LIFE: I missed with my extra life unused: paused, counting down;
-#            the EXTRA LIFE card undoes the miss, else it becomes a MISS
-#   MISS:    I missed; pause, then a new serve (volley count and ramp reset)
+#            the EXTRA LIFE card undoes the miss, else the rally ends
+#   GAME_OVER: the rally ended (my miss): final volley count shown, the game
+#            waits; playing again (a swing after GAME_OVER_SWING_IGNORE_S, a
+#            level tag, or Space) goes to READY with fresh cards. After
+#            GAME_OVER_IDLE_S it goes back to WAITING.
 # (The opponent never misses, so there is no state for that.)
 WAITING = "WAITING"
 READY = "READY"
 PLAYING = "PLAYING"
 EXTRA_LIFE = "EXTRA_LIFE"
-MISS = "MISS"
+GAME_OVER = "GAME_OVER"
 
 # Events returned by GameState.update(), for sounds and MQTT to react to.
 EVENT_HIT = "hit"
-EVENT_MISS = "miss"
+EVENT_MISS = "miss"               # my miss ended the rally (comes with EVENT_GAME_OVER)
+EVENT_GAME_OVER = "game_over"     # GAME_OVER screen: final score in last_rally
+EVENT_IDLE = "idle"               # GAME_OVER timed out: back to WAITING
 EVENT_RECORD = "record"           # best_streak (the volley record) just went up
 EVENT_SERVE = "serve"             # the ball is served (at GO)
 EVENT_READY_COUNT = "ready_count" # the serve countdown shows a new number (ready_number)
@@ -377,8 +382,10 @@ class GameState:
         self.level = config.DEFAULT_LEVEL
         self.streak = 0          # my consecutive successful returns
         self.best_streak = 0     # record (published to MQTT when it changes)
-        self.pause_timer = 0.0   # seconds left in the MISS pause
-        self.last_rally = 0      # volley count of the rally that just ended (shown in MISS)
+        self.last_rally = 0      # final volley count of the rally that just ended (GAME_OVER)
+        self.new_high_score = False   # did that rally set a new record (>= MIN_RECORD_FOR_HIGH_SCORE)?
+        self.game_over_at = None      # time (now) the GAME_OVER screen started
+        self._best_before_rally = 0   # the record when the rally started
         self.paddle = Paddle(0.0, (config.PADDLE_Y_MIN_M + config.PADDLE_Y_MAX_M) / 2)
         self.ball = Ball(0.0, config.SERVE_HEIGHT, config.OPP_HIT_Z)
         self.opponent = Opponent()
@@ -504,17 +511,29 @@ class GameState:
         return min(1.0, (self._now - self.contact_time) / self._window[1])
 
     def set_level(self, level: int):
-        """Pick a level (only while WAITING)."""
-        if self.state == WAITING and level in config.LEVELS:
+        """Pick a level (only on the WAITING or GAME_OVER screen)."""
+        if self.state in (WAITING, GAME_OVER) and level in config.LEVELS:
             self.level = level
             self.opponent.params = config.LEVELS[level]["opponent"]
 
+    @property
+    def can_play_again(self) -> bool:
+        """On the GAME_OVER screen, after GAME_OVER_SWING_IGNORE_S (so the last
+        swing's follow-through, or a Space pressed as a swing, doesn't restart
+        the game at once)."""
+        return (self.state == GAME_OVER and self.game_over_at is not None and self._now is not None
+                and self._now - self.game_over_at >= config.GAME_OVER_SWING_IGNORE_S)
+
     def start(self) -> list:
-        """WAITING -> READY (the serve countdown). Returns events. The first
-        rally: both cards available."""
-        if self.state != WAITING:
+        """WAITING or GAME_OVER -> READY (the serve countdown). Returns events.
+        A new rally: volley count 0, both cards available."""
+        if self.state == GAME_OVER and not self.can_play_again:
+            return []
+        if self.state not in (WAITING, GAME_OVER):
             return []
         self.streak = 0
+        self.miss_text = None
+        self._best_before_rally = self.best_streak
         self.slowmo_used = self.extra_life_used = False
         self.slowmo_left = 0
         self.opponent.params = self.params["opponent"]
@@ -644,13 +663,13 @@ class GameState:
                 events.append(EVENT_READY_COUNT)
             return events
 
-        if self.state == MISS:
-            if not self.holding:
-                step_ball(self.ball, dt)   # let the ball fly on / drop
+        if self.state == GAME_OVER:
+            if self.ball.y > -1.0:
+                step_ball(self.ball, dt)   # let the missed ball drop away
             self.opponent.step(dt, self.game_time)
-            self.pause_timer -= dt
-            if self.pause_timer <= 0:
-                events += self._serve()
+            if now - self.game_over_at >= config.GAME_OVER_IDLE_S:
+                self.state = WAITING       # nobody played again: back to the start screen
+                events.append(EVENT_IDLE)
             return events
 
         if self.state != PLAYING:
@@ -948,18 +967,21 @@ class GameState:
         return [EVENT_LIFE_OFFER, EVENT_COUNTDOWN]
 
     def _my_miss(self) -> list:
-        """The rally is over (a miss, after any extra-life countdown)."""
+        """The rally is over (a miss, after any extra-life countdown): GAME OVER."""
         self.slowmo_left = 0      # slow-mo ends with the rally
         # Fresh cards for the next rally (whether or not they were used, and
         # whether a timed-out extra life counts as spent doesn't matter)
-        if self.slowmo_used or self.extra_life_used:
-            self.card_note = ("Cards back for the next rally: SLOW-MO + EXTRA LIFE", self._now or 0.0)
         self.slowmo_used = self.extra_life_used = False
-        self.state = MISS
-        self.pause_timer = config.MISS_PAUSE_S
+        self.state = GAME_OVER
+        self.game_over_at = self._now if self._now is not None else 0.0
         self.last_rally = self.streak
+        # A new record: beat the record of when the rally started, still is the
+        # record (a bigger one may have loaded from MQTT meanwhile), long enough
+        self.new_high_score = (self.last_rally > self._best_before_rally
+                               and self.last_rally >= self.best_streak
+                               and self.last_rally >= config.MIN_RECORD_FOR_HIGH_SCORE)
         self.streak = 0          # the volley count, and with it the ramp, starts over
         self.target = None
         self.holding = False
         self.contact_time = None
-        return [EVENT_MISS]
+        return [EVENT_MISS, EVENT_GAME_OVER]

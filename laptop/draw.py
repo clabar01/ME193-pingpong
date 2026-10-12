@@ -30,7 +30,8 @@ ZONE_OFF = (255, 170, 60)     # target zone, paddle not in it yet
 ZONE_ON = (90, 230, 120)      # target zone, paddle center inside: in position
 TARGET_LOCK_S = 0.25          # "lock-on" animation when the target locks (ball bounced)
 STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
-                gs.MISS: (255, 110, 110), gs.EXTRA_LIFE: (255, 120, 160), gs.READY: (255, 205, 70)}
+                gs.GAME_OVER: (255, 110, 110), gs.EXTRA_LIFE: (255, 120, 160), gs.READY: (255, 205, 70)}
+RED = (255, 110, 110)
 GOLD = (255, 205, 70)
 SLOWMO_BLUE = (110, 170, 255)
 HEART = (255, 90, 130)
@@ -58,7 +59,8 @@ class Renderer:
         self._lock_time = None       # game_time the current target locked
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None):
+             mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None,
+             play_again=(False, False)):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
@@ -77,6 +79,8 @@ class Renderer:
             self._draw_swing_meter(game, swing_info)
         if sound_notes:
             self._draw_sound_notes(sound_notes)
+        if game.state == gs.GAME_OVER:
+            self._draw_game_over(game, now, *play_again)
         if game.state == gs.EXTRA_LIFE:
             self._draw_countdown(game)
         if game.state == gs.READY:
@@ -111,6 +115,47 @@ class Renderer:
         num = self.score_font.render(str(game.countdown_number), True, (255, 255, 255))
         self.screen.blit(num, num.get_rect(center=(cx, cy)))
         self._center_text(f"volley count {game.streak} is waiting", self.small_font, DIM_TEXT, h * 0.76)
+
+    def _draw_game_over(self, game: gs.GameState, now, swing_ok: bool, tags_ok: bool):
+        """GAME OVER: the final volley count big in the middle, NEW HIGH SCORE!
+        or the best, why the ball was missed, and how to play again (greyed
+        out for the first GAME_OVER_SWING_IGNORE_S)."""
+        w, h = self.screen.get_size()
+        shade = pygame.Surface((w, h), pygame.SRCALPHA)
+        shade.fill((8, 10, 20, 200))
+        self.screen.blit(shade, (0, 0))
+        self._center_text("GAME OVER", self.big_font, RED, h * 0.14)
+        num = self.score_font.render(str(game.last_rally), True, GOLD if game.new_high_score else TEXT)
+        self.screen.blit(num, num.get_rect(center=(w / 2, h * 0.32)))
+        self._center_text("volleys", self.small_font, DIM_TEXT, h * 0.41)
+        if game.new_high_score:
+            self._center_text("NEW HIGH SCORE!", self.font, GOLD, h * 0.47)
+        else:
+            self._center_text(f"Best: {game.best_streak}", self.font, TEXT, h * 0.47)
+        if game.miss_text:
+            why = "  -  ".join(game.miss_text.split("\n"))
+            self._center_text(why, self.small_font, CALIBRATE, h * 0.53)
+
+        level = f"Level {game.level}: {config.LEVELS[game.level]['name']}"
+        options = []
+        if swing_ok:
+            options.append(f"Swing the paddle to play again ({level})")
+        if tags_ok:
+            options.append("Hold up a level tag (0, 1 or 2) to play again at that level")
+        options.append("Press SPACE to play again" + ("" if swing_ok else f" ({level})"))
+        ready = game.can_play_again
+        if not ready and now is not None and game.game_over_at is not None:
+            wait = config.GAME_OVER_SWING_IGNORE_S - (now - game.game_over_at)
+            self._center_text(f"play again in {max(wait, 0):.1f} s", self.small_font, DIM_TEXT, h * 0.62)
+        else:
+            self._center_text("Play again:", self.small_font, DIM_TEXT, h * 0.62)
+        for i, line in enumerate(options):
+            self._center_text(line, self.font, STATE_COLORS[gs.WAITING] if ready else (70, 80, 100),
+                              h * 0.68 + i * 40)
+        if now is not None and game.game_over_at is not None:
+            left = config.GAME_OVER_IDLE_S - (now - game.game_over_at)
+            self._center_text(f"back to the start screen in {max(left, 0):.0f} s", self.small_font,
+                              (90, 96, 112), h * 0.93)
 
     def _draw_serve_count(self, game: gs.GameState):
         """"3, 2, 1" before each serve: a big number that shrinks a little
@@ -205,7 +250,7 @@ class Renderer:
             if connected:
                 text, color = f"MQTT hivemq: connected  |  {detail}", STATE_COLORS[gs.PLAYING]
             else:
-                text, color = f"MQTT hivemq: disconnected (retrying)  |  {detail}", STATE_COLORS[gs.MISS]
+                text, color = f"MQTT hivemq: disconnected (retrying)  |  {detail}", RED
         surf = self.small_font.render(text, True, color)
         self.screen.blit(surf, (20, self.screen.get_height() - surf.get_height() - 12))
 
@@ -215,17 +260,6 @@ class Renderer:
         self._draw_hud(game)
         if game.state == gs.WAITING:
             self._draw_waiting(game, paddle_src, tags_on)
-        elif game.state == gs.MISS:
-            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.265)
-            if game.miss_text:   # why: big enough to read mid-rally
-                lines = game.miss_text.split("\n")   # 2nd line: details (e.g. which way)
-                panel = pygame.Surface((self.screen.get_width(), 70 + 40 * (len(lines) - 1)),
-                                       pygame.SRCALPHA)
-                panel.fill((10, 14, 24, 190))
-                self.screen.blit(panel, (0, h * 0.36 - 35))
-                for i, line in enumerate(lines):
-                    self._center_text(line, self.reason_font if i == 0 else self.font, CALIBRATE,
-                                      h * 0.36 + (0 if i == 0 else 22 + 38 * i))
 
     # ------------------------------------------------------------ 3D scene
     def _draw_scene(self, game: gs.GameState):
@@ -387,7 +421,8 @@ class Renderer:
         self.screen.blit(lvl, (20, 52))
 
         w = self.screen.get_width()
-        self._draw_volleys(game)
+        if game.state != gs.GAME_OVER:   # (the GAME OVER screen shows the final score big)
+            self._draw_volleys(game)
         self._draw_card_icons(game)
         # Best (smaller, top right) and the rally's speed: "Speed x1.40" + bar
         best = self.font.render(f"Best: {game.best_streak}", True, TEXT)
@@ -434,16 +469,16 @@ class Renderer:
 
     def _draw_volleys(self, game: gs.GameState):
         """The volley count, big at the top center: pops on every hit. During
-        MISS it shows the rally that just ended (dimmed)."""
+        GAME_OVER it shows the rally that just ended (red)."""
         w = self.screen.get_width()
-        count = game.last_rally if game.state == gs.MISS else game.streak
+        count = game.last_rally if game.state == gs.GAME_OVER else game.streak
         now = pygame.time.get_ticks()
         if self._score_shown is not None and count > self._score_shown:
             self._score_pop_at = now
         self._score_shown = count
         age = (now - self._score_pop_at) / 1000
         pop = max(0.0, 1 - age / config.SCORE_POP_S) if config.SCORE_POP_S > 0 else 0
-        color = (STATE_COLORS[gs.MISS] if game.state == gs.MISS
+        color = (RED if game.state == gs.GAME_OVER
                  else GOLD if game.streak > 0 and game.streak >= game.best_streak else TEXT)
         num = self.score_font.render(str(count), True, color)
         if pop > 0:
