@@ -2,8 +2,27 @@
 
     hit      short "tock" on every hit
     tick     shorter, lighter, higher "tick" when the ball bounces on the table
-    death    "sad trombone" wah-wah-wah-waaah on a miss
-    victory  rising fanfare on a new record
+    record   short bell chime: the streak just passed the record (mid-rally)
+    point    short rising two-note "ding": the opponent missed
+    death    "sad trombone" wah-wah-wah-waaah: I missed, no new record
+    victory  rising fanfare: I missed, but the streak that just ended is a new record
+
+WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
+<reason>", shown on screen and written to data/events_<time>.log):
+  - ball bounces on the table (either side)          -> tick
+  - my paddle hits the ball                           -> hit (tock)
+      ...and that hit first takes the streak past the record of when the
+      streak started, and the streak is >= MIN_RECORD_FOR_FANFARE
+                                                      -> also record (chime), once per streak
+  - the opponent misses (POINT, my streak goes on)    -> point
+  - I miss (my streak ends):
+      the streak that ended is a new record (above the record of when it
+      started) and >= MIN_RECORD_FOR_FANFARE          -> victory INSTEAD of death
+      otherwise                                       -> death
+  - anything else (game start, new serve, level change, calibration,
+    record reset, the record loading from MQTT)       -> nothing
+A "streak" (rally, for these rules) runs from the first serve until I miss:
+opponent misses don't end it.
 
 Adapted from the Whistling World Cup project (Lego/world_cup/songs.py): the
 same note table, harmonics + attack/release envelope, and the same death and
@@ -13,12 +32,12 @@ Each sound is loaded from assets/sounds/<name>.wav if that file exists, else
 synthesized. To use your own sound, replace the .wav file (any sample rate,
 mono or stereo, 8/16/32-bit PCM). Regenerate the default files with:
     python laptop/sounds.py --write     (add --force to overwrite)
-    python laptop/sounds.py             (play all three to check them)
+    python laptop/sounds.py             (play them all to check them)
 
 One background thread owns the speaker: it keeps one output stream open and
 mixes whatever is playing in short chunks (SOUND_CHUNK samples), so a hit can
-play over the victory fanfare, and play() returns at once. A miss stops
-everything else and plays the death song alone. config.SOUND_MUTED = True
+play over a chime, and play() returns at once. The end-of-streak sounds
+(death, victory) stop everything else and play alone. config.SOUND_MUTED = True
 turns all of it off (no audio device is even opened).
 """
 import queue
@@ -33,9 +52,10 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "tick", "death", "victory")
+NAMES = ("hit", "tick", "record", "point", "death", "victory")
+END_OF_STREAK = ("death", "victory")   # these stop everything else and play alone
 # Peak level of each built-in sound (the tick is meant to sit under the tock)
-PEAK = {"tick": 0.4}
+PEAK = {"tick": 0.4, "record": 0.8, "point": 0.7}
 SOUND_CHUNK = 512      # samples per write: ~12 ms at 44.1 kHz (latency of a new sound)
 
 _NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6,
@@ -57,6 +77,7 @@ SONGS = {
     "victory": [("C5", .12), ("E5", .12), ("G5", .12), ("C6", .28), ("R", .06),
                 ("G5", .12), ("C6", .55), ("R", .1), ("E6", .15), ("D6", .15), ("C6", .7)],
     "death":   [("G4", .38), ("F#4", .38), ("F4", .38), ("E4", 1.3)],
+    "point":   [("E5", .08), ("A5", .2)],
 }
 
 
@@ -71,6 +92,20 @@ def synthesize(name: str, rate: int) -> np.ndarray:
         wave_ = (np.sin(2 * np.pi * 3200 * t) * np.exp(-t / 0.004)
                  + 0.6 * np.sin(2 * np.pi * 5100 * t) * np.exp(-t / 0.002)
                  + 0.5 * rng.uniform(-1, 1, n) * np.exp(-t / 0.001))
+    elif name == "record":
+        # A bell, two quick strikes (E6 then B6): a different timbre from the
+        # melodies, so it can't be mistaken for the fanfare.
+        parts = []
+        for hz, dur in ((note_hz("E6"), 0.12), (note_hz("B6"), 0.38)):
+            t = np.arange(int(rate * dur)) / rate
+            bell = (np.sin(2 * np.pi * hz * t)
+                    + 0.5 * np.sin(2 * np.pi * 2.76 * hz * t) * np.exp(-t / 0.05)
+                    + 0.25 * np.sin(2 * np.pi * 5.4 * hz * t) * np.exp(-t / 0.03))
+            env = np.exp(-t / 0.12)
+            a = int(0.003 * rate)
+            env[:a] *= np.linspace(0, 1, a)
+            parts.append(bell * env)
+        wave_ = np.concatenate(parts)
     elif name == "hit":
         # A short "tock": two high tones that die away in a few ms, plus a tiny
         # noise click at the start, like a ball on a paddle.
@@ -147,6 +182,50 @@ def load(name: str, rate: int) -> np.ndarray:
     return synthesize(name, rate).astype(np.float32)
 
 
+class SoundRules:
+    """Decides which sounds a frame's game events get (the table at the top).
+    No audio in here, so the rules can be tested exactly."""
+
+    def __init__(self, best_streak: int = 0):
+        self.old_record = best_streak   # the record when the current streak started
+        self.chimed = False             # "record" chime already played this streak?
+
+    def decide(self, events: list, game, streak_before: int) -> list:
+        """[(sound name, reason)] for this frame. `game` is the GameState after
+        the frame; streak_before = game.streak before it (a miss resets it)."""
+        import game_state as gs
+        out = []
+        # A record that went up without hits (it loaded from MQTT) is the
+        # record to beat; one that went down (tag-5 reset) restarts the count.
+        if gs.EVENT_BEST_RESET in events:
+            self.old_record, self.chimed = game.best_streak, False
+        elif game.best_streak > max(self.old_record, game.streak, streak_before):
+            self.old_record = game.best_streak
+        minimum = config.MIN_RECORD_FOR_FANFARE
+        for _ in range(events.count(gs.EVENT_BOUNCE)):
+            side = "my" if game.last_bounce and game.last_bounce[1] < config.TABLE_LENGTH / 2 else "their"
+            out.append(("tick", f"ball bounced on {side} side"))
+        if gs.EVENT_HIT in events:
+            out.append(("hit", f"paddle hit, streak {game.streak}"))
+            if not self.chimed and game.streak > self.old_record and game.streak >= minimum:
+                out.append(("record", f"new record {game.streak} mid-rally (old {self.old_record})"))
+                self.chimed = True
+        if gs.EVENT_POINT in events:
+            out.append(("point", f"opponent missed, streak {game.streak} continues"))
+        if gs.EVENT_MISS in events:
+            ended = streak_before
+            if ended > self.old_record and ended >= minimum:
+                out.append(("victory", f"rally ended with new record {ended} (old {self.old_record})"))
+            else:
+                why = (game.miss_text or "miss").split("\n")[0].lower()
+                note = (f", streak {ended} (record {self.old_record}, fanfare needs >= {minimum})"
+                        if ended > self.old_record else "")
+                out.append(("death", f"player miss, {why}{note}"))
+            self.old_record = max(self.old_record, game.best_streak)
+            self.chimed = False
+        return out
+
+
 class SoundPlayer:
     """Plays the game's sounds on a background thread. play() never blocks."""
 
@@ -201,8 +280,8 @@ class SoundPlayer:
                 for name in names:
                     if name is None:
                         continue
-                    if name == "death":
-                        playing.clear()  # the miss song plays alone
+                    if name in END_OF_STREAK:
+                        playing.clear()  # the streak is over: this plays alone
                     playing.append([sounds[name], 0])
                 if not playing:
                     continue

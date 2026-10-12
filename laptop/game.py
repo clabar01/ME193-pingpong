@@ -114,6 +114,7 @@ def main():
     game = gs.GameState()
     game.camera_mode = args.input == "camera"   # wider hit tolerance for wrist tracking
     log = ball_log.BallLog(mode=args.input)      # one CSV row per ball + summary at quit
+    event_log = ball_log.EventLog()               # game events + sounds, for tracing
     renderer = draw.Renderer(screen)
 
     camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)
@@ -136,7 +137,8 @@ def main():
         swing_src = inputs.LatestSwing(inputs.ImuSwing(mqtt), inputs.KeyboardSwing())
     key_src = inputs.KeyboardStart()       # Space / 0-2: always available as a fallback
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
-    record_cheered = False                 # victory sound already played this rally?
+    sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
+    sound_notes = []                       # (time, "name: reason") shown on screen
 
     running = True
     try:
@@ -159,6 +161,7 @@ def main():
             if tag_src is not None:
                 tag_src.update(can_start=game.state == gs.WAITING and paddle_src.ready)
                 actions += tag_src.poll()
+            streak_before = game.streak            # (a miss resets it; the sound rules need it)
             events = apply_actions(game, actions, paddle_src.ready)
 
             paddle_src.update(dt)
@@ -176,19 +179,19 @@ def main():
                 log.add(game.ball_results.pop(0))
             shown = [e for e in events if e != gs.EVENT_BOUNCE]   # bounces: too chatty
             if shown:
-                print(f"streak={game.streak} best={game.best_streak} events={shown}")
-            # Sounds: the fanfare once per rally when the record is first beaten
-            # (every later hit of that rally is also a "record"), else a hit sound.
-            if gs.EVENT_RECORD in events and not record_cheered:
-                player.play("victory")
-                record_cheered = True
-            elif gs.EVENT_HIT in events:
-                player.play("hit")
-            if gs.EVENT_MISS in events:
-                player.play("death")
-                record_cheered = False
-            if gs.EVENT_BOUNCE in events:
-                player.play("tick")      # ball on the table, either side
+                line = f"streak={game.streak} best={game.best_streak} events={shown}"
+                print(line)
+                event_log.write(line)
+            # Sounds: SoundRules decides (rules at the top of sounds.py); every
+            # sound is printed, logged, and shown on screen with its reason.
+            for name, reason in sound_rules.decide(events, game, streak_before):
+                player.play(name)
+                line = f"SOUND {name}: {reason}"
+                event_log.write(line)
+                if name != "tick":         # ticks: in the log only (two per shot)
+                    print(line)
+                    sound_notes.append((now, f"{name}: {reason}"))
+            sound_notes = [(t, s) for t, s in sound_notes if now - t < config.SOUND_SHOW_S][-3:]
             if mqtt is not None:
                 mqtt.update(game)   # record (when it goes up) + game state at 10 Hz
 
@@ -200,7 +203,8 @@ def main():
                     tag_src.draw_on_preview(view)
             renderer.draw(game, paddle_src, view, camera_error=getattr(camera, "error", None),
                           mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()),
-                          swing_info=swing_display(swing_src, mqtt, now))
+                          swing_info=swing_display(swing_src, mqtt, now),
+                          sound_notes=[s for _, s in sound_notes])
             pygame.display.flip()
     finally:
         game.flush_results()
@@ -210,6 +214,7 @@ def main():
         if mqtt is not None:
             print(mqtt.summary())
         log.close()
+        event_log.close()
         if camera is not None:
             camera.stop()
         if mqtt is not None:

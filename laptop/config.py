@@ -225,12 +225,17 @@ SWING_METER_MAX_G = 6.0        # top of the meter
 SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
-# Hit: short "tock". Bounce on the table: lighter "tick". Miss: the "death" song. New record: the victory fanfare
-# (once per rally, when the old record is first beaten). Files in
-# assets/sounds/ (hit.wav, tick.wav, death.wav, victory.wav); missing ones are synthesized.
+# Which sound when: see the table at the top of sounds.py. Files in
+# assets/sounds/ (hit, tick, record, point, death, victory .wav); missing
+# ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
 SOUND_SAMPLE_RATE = 44100    # used if the speaker supports it, else its own rate
+# A new record gets the "record" chime (when the streak passes it) and the
+# victory fanfare (when that streak ends) only if it is at least this long;
+# a shorter one just gets the hit tock and, at the end, the death song.
+MIN_RECORD_FOR_FANFARE = 3
+SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
 
 # ---------------------------------------------------------------- States
 MISS_PAUSE_S = 1.0          # pause in MISS before the next serve

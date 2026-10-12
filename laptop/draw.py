@@ -50,7 +50,7 @@ class Renderer:
         self._lock_time = None       # game_time the current target locked
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_status=None, swing_info=None):
+             mqtt_status=None, swing_info=None, sound_notes=None):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
@@ -67,6 +67,14 @@ class Renderer:
         self._draw_mqtt(mqtt_status)
         if swing_info is not None:
             self._draw_swing_meter(game, swing_info)
+        if sound_notes:
+            self._draw_sound_notes(sound_notes)
+
+    def _draw_sound_notes(self, notes):
+        """Last few sounds and why they played (top center, under the badge)."""
+        for i, text in enumerate(notes):
+            surf = self.small_font.render(f"sound {text}", True, DIM_TEXT)
+            self.screen.blit(surf, surf.get_rect(center=(self.screen.get_width() / 2, 52 + 22 * i)))
 
     def _draw_swing_meter(self, game: gs.GameState, info: dict):
         """Bottom right: last swing's peak (bar), flashing on each new swing, plus

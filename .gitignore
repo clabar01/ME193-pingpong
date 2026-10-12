@@ -8,3 +8,4 @@ venv/
 
 # per-session ball logs from the game (diagnostics)
 data/balls_*.csv
+data/events_*.log

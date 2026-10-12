@@ -94,3 +94,25 @@ class BallLog:
     def close(self):
         if self._file is not None:
             self._file.close()
+
+
+class EventLog:
+    """data/events_<date-time>.log (git-ignored): every game event and every
+    sound with its reason, one timestamped line each, so a session can be
+    traced afterwards (e.g. which sound played on which event)."""
+
+    def __init__(self):
+        self.path = REPO_ROOT / "data" / f"events_{time.strftime('%Y%m%d-%H%M%S')}.log"
+        self._file = None
+
+    def write(self, line: str):
+        if self._file is None:
+            self.path.parent.mkdir(exist_ok=True)
+            self._file = open(self.path, "w")
+        now = time.time()
+        self._file.write(f"{time.strftime('%H:%M:%S', time.localtime(now))}.{int(now % 1 * 1000):03d} {line}\n")
+        self._file.flush()
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
