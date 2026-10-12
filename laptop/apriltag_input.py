@@ -123,7 +123,7 @@ class TagStart:
       ("reset", None) the reset tag was held for TAG_HOLD_S: reset best_streak
       ("slowmo", None) / ("extra_life", None)
                      a power-up card was held for POWERUP_HOLD_S (GameState
-                     decides if it can be used: once per game, right moment)
+                     decides if it can be used: once per rally, right moment)
 
     Level and reset tags only count on the WAITING screen: during a game they
     are ignored completely (no bar, no action), so a stray card can't change

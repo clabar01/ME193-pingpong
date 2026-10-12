@@ -48,10 +48,10 @@ def meaning(tag_id: int) -> str:
 
 def subtitle(tag_id: int) -> str:
     if tag_id == config.TAG_SLOWMO:
-        return (f"Power-up card, once per game: {config.SLOWMO_SPEED:.0%} speed "
+        return (f"Power-up card, once per rally: {config.SLOWMO_SPEED:.0%} speed "
                 f"for {config.SLOWMO_BALLS} balls (show it during a rally)")
     if tag_id == config.TAG_EXTRA_LIFE:
-        return "Power-up card, once per game: show it during the countdown after a miss"
+        return "Power-up card, once per rally: show it during the countdown after a miss"
     return "Show it on the start screen"
 
 

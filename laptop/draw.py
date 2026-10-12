@@ -50,6 +50,7 @@ class Renderer:
         self.big_font = pygame.font.SysFont(None, 96)
         self.reason_font = pygame.font.SysFont(None, 64)
         self.small_font = pygame.font.SysFont(None, 26)
+        self.tiny_font = pygame.font.SysFont(None, 20)
         self.score_font = pygame.font.SysFont(None, 130)
         self._score_shown = None     # volley count last drawn, to start the pop
         self._score_pop_at = -1e9    # pygame ticks (ms) of the last increase
@@ -382,21 +383,33 @@ class Renderer:
                              border_radius=4)
 
     def _draw_card_icons(self, game: gs.GameState):
-        """Top right, left of Best: a heart while the extra life is available,
-        and a blue slow-mo badge with the balls left while slow-mo is on."""
-        x, y = self.screen.get_width() - 205, 34
-        if not game.extra_life_used:
-            r = 8      # heart = two circles + a triangle
-            pygame.draw.circle(self.screen, HEART, (x - r + 1, y - 3), r)
-            pygame.draw.circle(self.screen, HEART, (x + r - 1, y - 3), r)
-            pygame.draw.polygon(self.screen, HEART, [(x - 2 * r + 1, y), (x + 2 * r - 1, y), (x, y + 2 * r)])
-            x -= 75
-        if game.slowmo_left > 0:
-            pygame.draw.circle(self.screen, SLOWMO_BLUE, (x, y + 2), 15)
-            s_ = self.small_font.render("S", True, (10, 20, 40))
-            self.screen.blit(s_, s_.get_rect(center=(x, y + 3)))
-            left = self.small_font.render(f"x{game.slowmo_left}", True, SLOWMO_BLUE)
-            self.screen.blit(left, (x + 19, y - 6))
+        """Top right, left of Best: both power-up cards, always shown. Bright =
+        available this rally, dim + "used" = spent (they come back when the
+        rally ends), blue "x3" = slow-mo running with that many balls left."""
+        y = 34
+        dim = (90, 96, 112)
+        xs, xh = self.screen.get_width() - 265, self.screen.get_width() - 205   # S icon, heart
+        # SLOW-MO: a blue disc with an "S"
+        active, used = game.slowmo_left > 0, game.slowmo_used
+        color = SLOWMO_BLUE if (active or not used) else dim
+        pygame.draw.circle(self.screen, color, (xs, y + 2), 15, 0 if not used or active else 3)
+        letter = self.small_font.render("S", True, (10, 20, 40) if not used or active else dim)
+        self.screen.blit(letter, letter.get_rect(center=(xs, y + 3)))
+        caption = f"x{game.slowmo_left}" if active else "used" if used else "slow-mo"
+        self._icon_caption(caption, SLOWMO_BLUE if active else dim if used else DIM_TEXT, xs, y + 30)
+        # EXTRA LIFE: a heart (two circles + a triangle), outline when used
+        r = 8
+        heart = HEART if not game.extra_life_used else dim
+        width = 0 if not game.extra_life_used else 2
+        pygame.draw.circle(self.screen, heart, (xh - r + 1, y - 3), r, width)
+        pygame.draw.circle(self.screen, heart, (xh + r - 1, y - 3), r, width)
+        pygame.draw.polygon(self.screen, heart, [(xh - 2 * r + 1, y), (xh + 2 * r - 1, y), (xh, y + 2 * r)], width)
+        self._icon_caption("used" if game.extra_life_used else "life", dim if game.extra_life_used else DIM_TEXT,
+                           xh, y + 30)
+
+    def _icon_caption(self, text, color, x, y):
+        surf = self.tiny_font.render(text, True, color)
+        self.screen.blit(surf, surf.get_rect(center=(x, y)))
 
     def _draw_volleys(self, game: gs.GameState):
         """The volley count, big at the top center: pops on every hit. During

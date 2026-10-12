@@ -210,8 +210,9 @@ TAG_HOLD_S = 1.0
 TAG_DROPOUT_S = 0.25
 
 # ---------------------------------------------------------------- Power-up cards (AprilTags)
-# Each card works once per game (both come back when a new game starts from
-# the WAITING screen). Showing a used card only shows "already used".
+# Each card works once per RALLY: both come back whenever a rally ends (my
+# miss, after any extra-life countdown) and at the start of a game, so every
+# new rally starts with both. Showing a used card only shows "already used".
 # Keyboard stand-ins for testing: S = slow-mo, L = extra life.
 POWERUP_HOLD_S = 0.3         # a card must be held this long to act (shorter than TAG_HOLD_S)
 CARD_NOTE_S = 1.5            # "already used" / "not now" messages stay this long

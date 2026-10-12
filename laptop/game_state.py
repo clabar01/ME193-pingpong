@@ -26,8 +26,8 @@ A miss resets the volley count, so everything goes back to the level's
 starting values. The level (AprilTag 0/1/2) sets the starting speed and how
 fast it ramps.
 
-POWER-UP CARDS (AprilTags 10 and 11, each once per game; use_slowmo(),
-use_extra_life()):
+POWER-UP CARDS (AprilTags 10 and 11, each once per rally: both come back
+when a rally ends; use_slowmo(), use_extra_life()):
   - SLOW-MO: while playing, the ball and the opponent move at SLOWMO_SPEED x
     their current speed until SLOWMO_BALLS balls have reached my paddle
     (game time runs slower; the ramp keeps counting, so afterwards the speed
@@ -490,7 +490,7 @@ class GameState:
             self.opponent.params = config.LEVELS[level]["opponent"]
 
     def start(self) -> list:
-        """WAITING -> PLAYING. Returns events. A new game: both cards are back."""
+        """WAITING -> PLAYING. Returns events. The first rally: both cards available."""
         if self.state != WAITING:
             return []
         self.streak = 0
@@ -512,7 +512,7 @@ class GameState:
         return config.SLOWMO_SPEED if self.slowmo_left > 0 else 1.0
 
     def use_slowmo(self) -> list:
-        """SLOW-MO card shown (held POWERUP_HOLD_S). Only while PLAYING, once per game."""
+        """SLOW-MO card shown (held POWERUP_HOLD_S). Only while PLAYING, once per rally."""
         if self.slowmo_used:
             return self._refuse("SLOW-MO card already used")
         if self.state != PLAYING:
@@ -524,7 +524,7 @@ class GameState:
 
     def use_extra_life(self) -> list:
         """EXTRA LIFE card shown. Only during the countdown after a miss, once
-        per game: undoes the miss (volley count and ramp continue), new serve."""
+        per rally: undoes the miss (volley count and ramp continue), new serve."""
         if self.extra_life_used:
             return self._refuse("EXTRA LIFE card already used")
         if self.state != EXTRA_LIFE:
@@ -896,7 +896,13 @@ class GameState:
         return [EVENT_LIFE_OFFER, EVENT_COUNTDOWN]
 
     def _my_miss(self) -> list:
-        self.slowmo_left = 0      # the rally is over: slow-mo ends too
+        """The rally is over (a miss, after any extra-life countdown)."""
+        self.slowmo_left = 0      # slow-mo ends with the rally
+        # Fresh cards for the next rally (whether or not they were used, and
+        # whether a timed-out extra life counts as spent doesn't matter)
+        if self.slowmo_used or self.extra_life_used:
+            self.card_note = ("Cards back for the next rally: SLOW-MO + EXTRA LIFE", self._now or 0.0)
+        self.slowmo_used = self.extra_life_used = False
         self.state = MISS
         self.pause_timer = config.MISS_PAUSE_S
         self.last_rally = self.streak
