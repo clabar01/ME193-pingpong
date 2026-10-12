@@ -63,8 +63,14 @@ PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever t
 #   start_speed:   m/s along the table of the first ball of a rally (all
 #                  shots, mine and the opponent's, use the current speed)
 #   speed_ramp:    the speed grows by this fraction of start_speed per hit
-#                  (0.03 = +3% per hit, so x1.30 after 10 hits)...
+#                  (0.02 = +2% per hit, so x1.20 after 10 hits)...
 #   speed_max:     ...up to this many m/s (stays humanly hittable)
+#   arc_speed:     the slowest speed a shot's ARC is computed for. A slower
+#                  ball would have to fly much higher to clear the net (at
+#                  2.4 m/s Beginner balls reached my plane up to 1.1 m high,
+#                  above the paddle's reach), so below arc_speed the ball
+#                  keeps the arc of an arc_speed shot and the game plays it
+#                  in slow motion instead: it still moves at the slower speed.
 #   hit_tolerance: (left/right, up/down) slack in m around "paddle touches
 #                  ball" (bigger = easier). A hit needs the ball's center within
 #                  paddle radius + ball radius + this of the paddle's center,
@@ -83,13 +89,13 @@ PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever t
 #                  usual top speed (m/s); it goes faster when it has to, so it
 #                  always gets there.
 LEVELS = {
-    0: {"name": "Beginner", "start_speed": 3.0, "speed_ramp": 0.03, "speed_max": 4.8,
+    0: {"name": "Beginner", "start_speed": 2.4, "speed_ramp": 0.02, "speed_max": 4.8, "arc_speed": 3.0,
         "hit_tolerance": (0.12, None), "hit_tolerance_camera": (0.20, None),
         "opponent": {"reaction_s": 0.28, "max_speed": 1.4}},
-    1: {"name": "Club",     "start_speed": 3.8, "speed_ramp": 0.04, "speed_max": 5.6,
+    1: {"name": "Club",     "start_speed": 3.0, "speed_ramp": 0.025, "speed_max": 5.6, "arc_speed": 3.8,
         "hit_tolerance": (0.07, 0.05), "hit_tolerance_camera": (0.12, 0.08),
         "opponent": {"reaction_s": 0.22, "max_speed": 1.8}},
-    2: {"name": "Pro",      "start_speed": 4.6, "speed_ramp": 0.05, "speed_max": 6.4,
+    2: {"name": "Pro",      "start_speed": 3.7, "speed_ramp": 0.03, "speed_max": 6.4, "arc_speed": 4.6,
         "hit_tolerance": (0.03, 0.02), "hit_tolerance_camera": (0.05, 0.03),
         "opponent": {"reaction_s": 0.16, "max_speed": 2.2}},
 }
@@ -230,7 +236,7 @@ SLOWMO_BALLS = 3
 # count and the ramp continue, a new ball is served). Once used, misses end
 # the rally at once.
 TAG_EXTRA_LIFE = 11
-EXTRA_LIFE_COUNTDOWN_S = 5.0
+EXTRA_LIFE_COUNTDOWN_S = 10.0
 
 # ---------------------------------------------------------------- Swing timing (is_hit)
 # A swing is matched by its ARRIVAL time on the laptop, in a window around the
@@ -280,7 +286,7 @@ HIGH_SCORE_BANNER_S = 2.0      # banners ("HIGH SCORE!", "SLOW-MO!", "EXTRA LIFE
 
 # ---------------------------------------------------------------- Sounds (sounds.py)
 # Which sound when: see the table at the top of sounds.py. Files in
-# assets/sounds/ (hit, tick, record, death, slowmo, life, count .wav); missing
+# assets/sounds/ (hit, tick, record, death, slowmo, life, count, go .wav); missing
 # ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
@@ -291,4 +297,10 @@ MIN_RECORD_FOR_HIGH_SCORE = 3
 SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
 
 # ---------------------------------------------------------------- States
-MISS_PAUSE_S = 1.0          # pause in MISS before the next serve
+MISS_PAUSE_S = 1.0          # pause in MISS before the next serve's countdown
+# Before EVERY serve (game start, after a miss, after an extra life): a big
+# "3, 2, 1, GO!" on screen and the LED matrix, a beep per number and a
+# higher beep on GO. The ball is served at GO.
+SERVE_COUNT_FROM = 3        # counts 3, 2, 1
+SERVE_COUNT_STEP_S = 1.0    # seconds per number
+SERVE_GO_SHOW_S = 0.6       # "GO!" stays on screen this long (the ball is already flying)

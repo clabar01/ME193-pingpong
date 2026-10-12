@@ -7,7 +7,9 @@
     death    "sad trombone" wah-wah-wah-waaah: the rally ended (I missed)
     slowmo   a falling "whoooop": SLOW-MO card used
     life     a quick rising four-note jingle: EXTRA LIFE card used
-    count    short beep: each second of the extra-life countdown
+    count    short beep: each number of the serve countdown (3, 2, 1) and of the
+             extra-life countdown
+    go       higher, longer beep: GO, the ball is served
 
 WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
 <reason>", shown on screen and written to data/events_<time>.log):
@@ -17,13 +19,15 @@ WHICH SOUND WHEN (SoundRules below; every sound is printed as "SOUND <name>:
       the rally started, and the count is >= MIN_RECORD_FOR_HIGH_SCORE
                                                       -> also record (chime) + the HIGH
                                                          SCORE banner, once per rally
+  - before every serve: 3, 2, 1                        -> count on each number
+      ...GO (the ball is served)                      -> go
   - SLOW-MO card used                                 -> slowmo
-  - I miss with the extra life unused                 -> count (5), then count each
-                                                         second (4, 3, 2, 1); no death yet
+  - I miss with the extra life unused                 -> count (10), then count each
+                                                         second (9 ... 1); no death yet
       ...EXTRA LIFE card shown in time                -> life (the rally goes on)
       ...the countdown runs out                       -> death
   - I miss otherwise (the rally ends)                 -> death
-  - anything else (game start, new serve, the opponent's returns, level
+  - anything else (game start and new serve apart from their countdown, the opponent's returns, level
     change, calibration, record reset, the record loading from MQTT, a card
     that is used up or not usable now)                -> nothing
 The opponent never misses, so a rally runs from the serve until I miss and
@@ -57,10 +61,10 @@ import config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO_ROOT / "assets" / "sounds"
-NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count")
+NAMES = ("hit", "tick", "record", "death", "slowmo", "life", "count", "go")
 END_OF_STREAK = ("death",)   # stops everything else and plays alone
 # Peak level of each built-in sound (the tick is meant to sit under the tock)
-PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "slowmo": 0.7, "life": 0.8}
+PEAK = {"tick": 0.4, "record": 0.8, "count": 0.6, "go": 0.75, "slowmo": 0.7, "life": 0.8}
 SOUND_CHUNK = 512      # samples per write: ~12 ms at 44.1 kHz (latency of a new sound)
 
 _NOTE_INDEX = {"C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5, "F#": 6,
@@ -82,6 +86,7 @@ SONGS = {
     "death":   [("G4", .38), ("F#4", .38), ("F4", .38), ("E4", 1.3)],
     "life":    [("C6", .06), ("E6", .06), ("G6", .06), ("C7", .22)],
     "count":   [("A5", .09)],
+    "go":      [("A6", .2)],      # an octave above the count beep, and longer
 }
 
 
@@ -223,13 +228,17 @@ class SoundRules:
                 out.append(("record", f"HIGH SCORE: volley {game.streak} passed the record "
                                       f"(old {self.old_record})"))
                 self.chimed = True
+        if gs.EVENT_LIFE_USED in events:
+            out.append(("life", f"EXTRA LIFE card: the miss is undone, volley {game.streak} goes on"))
+        if gs.EVENT_READY_COUNT in events:
+            out.append(("count", f"serve countdown {game.ready_number}"))
+        if gs.EVENT_GO in events:
+            out.append(("go", "GO: the ball is served"))
         if gs.EVENT_SLOWMO in events:
             out.append(("slowmo", f"SLOW-MO card: {config.SLOWMO_SPEED:.0%} speed for "
                                   f"{config.SLOWMO_BALLS} balls"))
         if gs.EVENT_COUNTDOWN in events:
             out.append(("count", f"extra life countdown {game.countdown_number}"))
-        if gs.EVENT_LIFE_USED in events:
-            out.append(("life", f"EXTRA LIFE card: the miss is undone, volley {game.streak} goes on"))
         if gs.EVENT_MISS in events:     # the rally ended (after any countdown)
             ended = streak_before
             why = (game.miss_text or "miss").split("\n")[0].lower()

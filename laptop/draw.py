@@ -30,7 +30,7 @@ ZONE_OFF = (255, 170, 60)     # target zone, paddle not in it yet
 ZONE_ON = (90, 230, 120)      # target zone, paddle center inside: in position
 TARGET_LOCK_S = 0.25          # "lock-on" animation when the target locks (ball bounced)
 STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
-                gs.MISS: (255, 110, 110), gs.EXTRA_LIFE: (255, 120, 160)}
+                gs.MISS: (255, 110, 110), gs.EXTRA_LIFE: (255, 120, 160), gs.READY: (255, 205, 70)}
 GOLD = (255, 205, 70)
 SLOWMO_BLUE = (110, 170, 255)
 HEART = (255, 90, 130)
@@ -79,6 +79,10 @@ class Renderer:
             self._draw_sound_notes(sound_notes)
         if game.state == gs.EXTRA_LIFE:
             self._draw_countdown(game)
+        if game.state == gs.READY:
+            self._draw_serve_count(game)
+        elif now is not None and game.go_at is not None and now - game.go_at < config.SERVE_GO_SHOW_S:
+            self._draw_go(now - game.go_at)
         if now is not None and game.card_note and now - game.card_note[1] < config.CARD_NOTE_S:
             self._center_text(game.card_note[0], self.font, CALIBRATE, self.screen.get_height() * 0.62)
         if banner is not None and banner[2] < config.HIGH_SCORE_BANNER_S:
@@ -107,6 +111,23 @@ class Renderer:
         num = self.score_font.render(str(game.countdown_number), True, (255, 255, 255))
         self.screen.blit(num, num.get_rect(center=(cx, cy)))
         self._center_text(f"volley count {game.streak} is waiting", self.small_font, DIM_TEXT, h * 0.76)
+
+    def _draw_serve_count(self, game: gs.GameState):
+        """"3, 2, 1" before each serve: a big number that shrinks a little
+        through its second."""
+        h = self.screen.get_height()
+        step = config.SERVE_COUNT_STEP_S
+        frac = (game.ready_left % step) / step if step > 0 else 0     # 1 -> 0 through each number
+        num = self.score_font.render(str(game.ready_number), True, GOLD)
+        num = pygame.transform.smoothscale_by(num, 1.0 + 0.5 * frac)
+        self.screen.blit(num, num.get_rect(center=(self.screen.get_width() / 2, h * 0.45)))
+        self._center_text("get ready", self.font, DIM_TEXT, h * 0.62)
+
+    def _draw_go(self, age: float):
+        """"GO!" at the serve, fading out over SERVE_GO_SHOW_S."""
+        text = self.score_font.render("GO!", True, STATE_COLORS[gs.PLAYING])
+        text.set_alpha(int(255 * max(0.0, 1 - age / config.SERVE_GO_SHOW_S)))
+        self.screen.blit(text, text.get_rect(center=(self.screen.get_width() / 2, self.screen.get_height() * 0.45)))
 
     def _draw_banner(self, text: str, kind: str, age: float):
         """Big banner ("HIGH SCORE!", "SLOW-MO!", "EXTRA LIFE!"), popping in, then fading out."""

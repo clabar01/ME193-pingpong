@@ -11,8 +11,9 @@ Two topics:
   GAME_TOPIC   (ME193/CeciLaBarge/game)
       About GAME_PUBLISH_HZ times a second, JSON for the UNO Q LED matrix:
       {"state": "PLAYING", "level": 1, "streak": 3, "x": 0.512, "y": 0.233, "h": 0.31}
-      plus "count": 5..1 during the EXTRA_LIFE countdown, and "flash": "S"/"L"
-      for CARD_FLASH_S after a SLOW-MO / EXTRA LIFE card activates.
+      plus "count": 10..1 during the EXTRA_LIFE countdown or 3, 2, 1 during the
+      serve countdown (state READY), and "flash": "S"/"L" for CARD_FLASH_S after
+      a SLOW-MO / EXTRA LIFE card activates, "GO" for SERVE_GO_SHOW_S at GO.
       x, y = ball position seen from above the table, 0..1 (x: 0 = left edge,
       1 = right; y: 0 = the opponent's end, 1 = my end); h = height above the
       table in meters. Not retained. Sent in every mode.
@@ -216,10 +217,14 @@ class GameMqtt:
             "h": round(max(game.ball.y, 0.0), 3),   # ball height above the table (m)
         }
         if game.state == gs.EXTRA_LIFE:
-            msg["count"] = game.countdown_number      # 5..1: the LED matrix shows it
+            msg["count"] = game.countdown_number      # 10..1: the LED matrix shows it
+        elif game.state == gs.READY:
+            msg["count"] = game.ready_number          # serve countdown 3, 2, 1
         flash = game.card_flash
         if flash is not None and time.monotonic() - flash[1] < config.CARD_FLASH_S:
             msg["flash"] = flash[0]                   # "S" / "L": a card just activated
+        if game.go_at is not None and time.monotonic() - game.go_at < config.SERVE_GO_SHOW_S:
+            msg["flash"] = "GO"                       # the serve countdown just reached GO
         client.publish(self.game_topic, json.dumps(msg), qos=0, retain=False)
 
     def summary(self) -> str:

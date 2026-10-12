@@ -19,7 +19,9 @@ opponent (a simple AI that never misses) returns it -> ... until I miss.
 THE RALLY RAMP: every hit makes the next ball a bit harder (GameState
 speed_factor / aim_spread / zone_scale, values in config.py):
   - the ball speed (all shots) grows by the level's speed_ramp per hit, up
-    to the level's speed_max;
+    to the level's speed_max (below the level's arc_speed the ball keeps the
+    arc of an arc_speed shot and moves in slow motion, so slow balls don't
+    fly higher than the paddle can reach: see pace);
   - the opponent aims wider across my side (AIM_SPREAD_*);
   - the hit zone's tolerances shrink with the speed, down to a floor (ZONE_*).
 A miss resets the volley count, so everything goes back to the level's
@@ -47,12 +49,14 @@ import config
 
 # States of the game.
 #   WAITING: before a game starts (waiting for Space / an AprilTag)
+#   READY:   "3, 2, 1, GO!" before every serve; the ball is served at GO
 #   PLAYING: the ball is in play (including a short wait for a late swing)
 #   EXTRA_LIFE: I missed with my extra life unused: paused, counting down;
 #            the EXTRA LIFE card undoes the miss, else it becomes a MISS
 #   MISS:    I missed; pause, then a new serve (volley count and ramp reset)
 # (The opponent never misses, so there is no state for that.)
 WAITING = "WAITING"
+READY = "READY"
 PLAYING = "PLAYING"
 EXTRA_LIFE = "EXTRA_LIFE"
 MISS = "MISS"
@@ -61,7 +65,9 @@ MISS = "MISS"
 EVENT_HIT = "hit"
 EVENT_MISS = "miss"
 EVENT_RECORD = "record"           # best_streak (the volley record) just went up
-EVENT_SERVE = "serve"
+EVENT_SERVE = "serve"             # the ball is served (at GO)
+EVENT_READY_COUNT = "ready_count" # the serve countdown shows a new number (ready_number)
+EVENT_GO = "go"                   # the serve countdown reached GO
 EVENT_BEST_RESET = "best_reset"   # best_streak was reset (AprilTag 5)
 EVENT_BOUNCE = "bounce"           # ball bounced on the table
 EVENT_OPP_HIT = "opp_hit"         # the opponent returned the ball (it always does)
@@ -424,6 +430,12 @@ class GameState:
         self._count_shown = 0
         self.card_note = None         # (text, time) e.g. "SLOW-MO card already used"
         self.card_flash = None        # (letter, time) for the LED matrix: "S" / "L"
+        # Serve countdown ("3, 2, 1, GO!")
+        self.ready_left = 0.0         # s left before GO
+        self._ready_shown = 0
+        self.go_at = None             # time (now) of the last GO, for the screen / LED matrix
+        self._shot_pace = 1.0         # time scale of the shot in the air (see pace)
+        self._phys_carry = 0.0        # game time not yet simulated (< PHYSICS_DT)
         self._miss_record = None      # CSV row of the ball an extra life could rescue
 
     # ------------------------------------------------------------ controls
@@ -446,9 +458,17 @@ class GameState:
     @property
     def ball_speed(self) -> float:
         """m/s along the table for the next shot (before my swing's factor).
-        (The one place the ramped speed comes from: a slow-motion effect would
-        scale this.)"""
+        The one place the ramped speed comes from (slow-mo scales it)."""
         return self.params["start_speed"] * self.speed_factor
+
+    @property
+    def pace(self) -> float:
+        """Below the level's arc_speed a ball would need a much higher arc to
+        clear the net (and would cross my plane above the paddle's reach). So
+        a shot is aimed as if it were at least arc_speed fast, and played back
+        at pace = ball_speed / arc_speed (< 1): same arc, slower ball. At or
+        above arc_speed, pace = 1."""
+        return min(1.0, self.ball_speed / self.params["arc_speed"])
 
     @property
     def aim_spread(self) -> float:
@@ -490,32 +510,40 @@ class GameState:
             self.opponent.params = config.LEVELS[level]["opponent"]
 
     def start(self) -> list:
-        """WAITING -> PLAYING. Returns events. The first rally: both cards available."""
+        """WAITING -> READY (the serve countdown). Returns events. The first
+        rally: both cards available."""
         if self.state != WAITING:
             return []
         self.streak = 0
         self.slowmo_used = self.extra_life_used = False
         self.slowmo_left = 0
         self.opponent.params = self.params["opponent"]
-        self._serve()
-        return [EVENT_SERVE]
+        return self._serve()
+
+    @property
+    def ready_number(self) -> int:
+        """3, 2, 1 during the serve countdown (0 otherwise)."""
+        if self.state != READY:
+            return 0
+        return math.ceil(self.ready_left / config.SERVE_COUNT_STEP_S - 1e-9)
 
     # ------------------------------------------------------------ power-up cards
     @property
     def countdown_number(self) -> int:
-        """5, 4, 3, 2, 1 during the EXTRA_LIFE countdown (0 otherwise)."""
+        """EXTRA_LIFE_COUNTDOWN_S down to 1 during the EXTRA_LIFE countdown (0 otherwise)."""
         return math.ceil(self.countdown_left - 1e-9) if self.state == EXTRA_LIFE else 0
 
     @property
     def time_scale(self) -> float:
-        """How fast the ball and the opponent move: SLOWMO_SPEED in slow-mo."""
-        return config.SLOWMO_SPEED if self.slowmo_left > 0 else 1.0
+        """How fast the ball and the opponent move: the shot's pace (< 1 for
+        balls slower than arc_speed), times SLOWMO_SPEED in slow-mo."""
+        return self._shot_pace * (config.SLOWMO_SPEED if self.slowmo_left > 0 else 1.0)
 
     def use_slowmo(self) -> list:
         """SLOW-MO card shown (held POWERUP_HOLD_S). Only while PLAYING, once per rally."""
         if self.slowmo_used:
             return self._refuse("SLOW-MO card already used")
-        if self.state != PLAYING:
+        if self.state not in (PLAYING, READY):
             return self._refuse("SLOW-MO works during a rally")
         self.slowmo_used = True
         self.slowmo_left = config.SLOWMO_BALLS
@@ -539,8 +567,7 @@ class GameState:
         if self._miss_record is not None:
             self._miss_record["powerup"] = (self._contact_info or {}).get("powerup", "extra_life")
         self.miss_text = None
-        self._serve()
-        return [EVENT_LIFE_USED, EVENT_SERVE]
+        return [EVENT_LIFE_USED] + self._serve()
 
     def _refuse(self, text: str) -> list:
         self.card_note = (text, self._now or 0.0)
@@ -607,14 +634,23 @@ class GameState:
                 events.append(EVENT_COUNTDOWN)
             return events
 
+        if self.state == READY:
+            # "3, 2, 1, GO!": the ball waits at the opponent's end; served at GO
+            self.ready_left -= dt
+            if self.ready_left <= 0:
+                events += self._launch_serve()
+            elif 0 < self.ready_number < self._ready_shown:
+                self._ready_shown = self.ready_number
+                events.append(EVENT_READY_COUNT)
+            return events
+
         if self.state == MISS:
             if not self.holding:
                 step_ball(self.ball, dt)   # let the ball fly on / drop
             self.opponent.step(dt, self.game_time)
             self.pause_timer -= dt
             if self.pause_timer <= 0:
-                self._serve()
-                events.append(EVENT_SERVE)
+                events += self._serve()
             return events
 
         if self.state != PLAYING:
@@ -632,14 +668,17 @@ class GameState:
             b.y += b.vy * dt
             b.z = max(b.z + b.vz * dt, config.MY_HIT_Z - config.HOLD_MAX_SINK_M)
         else:
-            # Physics in small fixed substeps (PHYSICS_DT), so bounces and the
-            # crossing spot don't depend on the frame rate, and match the
-            # target prediction (predict_crossing_xy uses the same step).
-            n = max(1, math.ceil(game_dt / config.PHYSICS_DT - 1e-9))
+            # Physics in fixed steps of exactly PHYSICS_DT of game time (the
+            # remainder carries over to the next frame), so bounces and the
+            # crossing spot don't depend on the frame rate or the pace, and
+            # match the target prediction (predict_crossing_xy, same step).
+            self._phys_carry += game_dt
+            n = int(self._phys_carry / config.PHYSICS_DT + 1e-9)
+            self._phys_carry -= n * config.PHYSICS_DT
             for _ in range(n):
                 b = self.ball
                 x_before, y_before, z_before = b.x, b.y, b.z
-                if step_ball(b, game_dt / n):
+                if step_ball(b, config.PHYSICS_DT):
                     events.append(EVENT_BOUNCE)
                     self.last_bounce = (b.x, b.z, self.game_time)
                     if b.z < config.TABLE_LENGTH / 2:
@@ -731,15 +770,26 @@ class GameState:
         self.coming_to_me = coming_to_me
         self.bounced_my_side = self.bounced_opp_side = False
 
-    def _serve(self):
-        """The opponent serves: from its end, landing somewhere on my side."""
-        self.state = PLAYING
+    def _serve(self) -> list:
+        """A new ball: first the "3, 2, 1, GO!" countdown (state READY), with
+        the ball held at the opponent's end; _launch_serve() serves it at GO."""
+        self.state = READY
         self.holding = False
         self.contact_time = None
+        self.target = None
+        self.ready_left = config.SERVE_COUNT_FROM * config.SERVE_COUNT_STEP_S
+        self._ready_shown = self.ready_number
         x = random.uniform(-0.4, 0.4)
-        self.opponent.x = x
+        self.opponent.x = self.opponent.target_x = x
         self.ball = Ball(x, config.SERVE_HEIGHT, config.OPP_HIT_Z)
+        return [EVENT_READY_COUNT]
+
+    def _launch_serve(self) -> list:
+        """GO: the opponent serves, landing somewhere on my side."""
+        self.state = PLAYING
+        self.go_at = self._now
         self._aim_at_me()
+        return [EVENT_GO, EVENT_SERVE]
 
     def _aim_at_me(self):
         """Opponent's shot to a random spot on my side. The ball keeps drifting
@@ -752,8 +802,9 @@ class GameState:
         for attempt in range(20):
             self.ball = Ball(start.x, start.y, start.z)
             spread = self.aim_spread * (1 - attempt / 20)   # wider as the rally grows; narrower each retry
+            self._shot_pace = self.pace     # slower than arc_speed: same arc, slow motion
             aim(self.ball, random.uniform(-spread, spread),
-                random.uniform(*config.MY_LANDING_Z), self.ball_speed)
+                random.uniform(*config.MY_LANDING_Z), self.ball_speed / self._shot_pace)
             cross = predict_crossing(self.ball, config.MY_HIT_Z)
             if cross is not None and abs(cross) <= limit:
                 break
@@ -773,7 +824,8 @@ class GameState:
         target_x = random.uniform(-config.LANDING_X_MAX, config.LANDING_X_MAX)
         self._new_shot(coming_to_me=False)
         self.target = None
-        aim(b, target_x, target_z, self.ball_speed * factor)
+        self._shot_pace = self.pace
+        aim(b, target_x, target_z, self.ball_speed * factor / self._shot_pace)
         self.opponent.watch(b, self.game_time)
 
     def _opponent_turn(self) -> list:
