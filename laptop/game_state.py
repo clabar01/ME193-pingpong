@@ -10,10 +10,21 @@ World coordinates are meters (see config.py):
     z  along the table (0 = MY end, TABLE_LENGTH = the opponent's end)
 Times (`now`, contact and swing times) are time.monotonic() seconds.
 
-A rally: the opponent serves/returns -> the ball arcs over the net, bounces
-once on my side -> it reaches my hitting plane ("contact") -> the hit rule
-decides -> on a hit the ball arcs back over the net, bounces once on the
-opponent's side -> the opponent (a simple AI) returns it or misses.
+THE GOAL: as many volleys (hits of mine) in a row as possible. A rally: the
+opponent serves -> the ball arcs over the net, bounces once on my side -> it
+reaches my hitting plane ("contact") -> the hit rule decides -> on a hit the
+ball arcs back over the net, bounces once on the opponent's side -> the
+opponent (a simple AI that never misses) returns it -> ... until I miss.
+
+THE RALLY RAMP: every hit makes the next ball a bit harder (GameState
+speed_factor / aim_spread / zone_scale, values in config.py):
+  - the ball speed (all shots) grows by the level's speed_ramp per hit, up
+    to the level's speed_max;
+  - the opponent aims wider across my side (AIM_SPREAD_*);
+  - the hit zone's tolerances shrink with the speed, down to a floor (ZONE_*).
+A miss resets the volley count, so everything goes back to the level's
+starting values. The level (AprilTag 0/1/2) sets the starting speed and how
+fast it ramps.
 """
 import math
 import random
@@ -26,22 +37,20 @@ import config
 # States of the game.
 #   WAITING: before a game starts (waiting for Space / an AprilTag)
 #   PLAYING: the ball is in play (including a short wait for a late swing)
-#   MISS:    I missed; pause, then a new serve (my streak resets)
-#   POINT:   the opponent missed; pause, then a new serve (my streak continues)
+#   MISS:    I missed; pause, then a new serve (volley count and ramp reset)
+# (The opponent never misses, so there is no state for that.)
 WAITING = "WAITING"
 PLAYING = "PLAYING"
 MISS = "MISS"
-POINT = "POINT"
 
 # Events returned by GameState.update(), for sounds and MQTT to react to.
 EVENT_HIT = "hit"
 EVENT_MISS = "miss"
-EVENT_RECORD = "record"           # best_streak just went up
+EVENT_RECORD = "record"           # best_streak (the volley record) just went up
 EVENT_SERVE = "serve"
 EVENT_BEST_RESET = "best_reset"   # best_streak was reset (AprilTag 5)
 EVENT_BOUNCE = "bounce"           # ball bounced on the table
-EVENT_OPP_HIT = "opp_hit"         # the opponent returned the ball
-EVENT_POINT = "point"             # the opponent missed
+EVENT_OPP_HIT = "opp_hit"         # the opponent returned the ball (it always does)
 
 
 @dataclass
@@ -101,7 +110,12 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #      Beginner checks only left/right (height is ignored) with a generous
 #      tolerance; Club checks both loosely; Pro checks both tightly. With the
 #      camera paddle they are wider than with arrow keys, because tracking a
-#      hand is noisier. It is enough for this to be true at ANY moment from
+#      hand is noisier. As a rally speeds up (every hit makes the ball faster,
+#      see THE RALLY RAMP at the top), the tolerances shrink with the speed:
+#      tolerance x max(ZONE_MIN_SCALE, 1 - ZONE_SHRINK_PER_SPEED x (speed
+#      factor - 1)), so 80% of the level's at x1.4 speed, never below 60%.
+#      They are back to the level's full values after a miss. The paddle
+#      radius itself never shrinks. It is enough for this to be true at ANY moment from
 #      PADDLE_LOOKBACK_S (0.2 s) before contact up to contact: swinging the
 #      real paddle moves the tracked hand right at contact, so the position the
 #      player held just before the swing must count. If the paddle was never
@@ -128,6 +142,9 @@ REASON_NO_CONTACT = "NO_CONTACT"        # the ball never reached my hitting plan
 #   - a swing arrives inside the window  -> HIT: the ball flies back over the
 #     net, faster and deeper the harder the swing was;
 #   - the window closes with no swing    -> MISS: the ball drops past me.
+#
+# The opponent never misses, so a rally only ends with a miss of mine; the
+# score is how many hits in a row I made (the volley count).
 #
 # Why this is fair: a swing alone never scores (the paddle must have been on
 # the ball's path at contact time), and the paddle alone never scores (there
@@ -246,32 +263,41 @@ def on_table(x: float, z: float) -> bool:
 
 
 class Opponent:
-    """A simple AI at the far end. It watches my return, waits its reaction
-    time, then slides its paddle (at most max_speed) toward where it thinks
-    the ball will cross its hitting plane, plus a random aim error. It
-    returns the ball if its paddle is within OPP_REACH_M of the ball there."""
+    """A simple AI at the far end that never misses. It watches my return,
+    waits its reaction time, then slides its paddle toward the spot where the
+    ball will cross its hitting plane. It moves at its usual max_speed, or
+    faster when that wouldn't get it there in time, so it always arrives a
+    little before the ball (it slides, it never jumps). Then it returns the
+    ball (GameState._opponent_turn)."""
+
+    ARRIVE_EARLY_S = 0.08   # aims to be in place this long before the ball
 
     def __init__(self):
         self.x = 0.0
         self.target_x = 0.0
         self.react_at = 0.0     # game time it starts moving
+        self.speed = 0.0        # m/s across the table for the current move
         self.params = config.LEVELS[config.DEFAULT_LEVEL]["opponent"]
 
     def watch(self, ball: Ball, game_time: float):
-        """Called when I return the ball: predict where it will cross, add error."""
+        """Called when I return the ball: where and when will it cross?"""
         cross = predict_crossing(ball, config.OPP_HIT_Z)
-        guess = cross if cross is not None else 0.0
-        self.target_x = guess + random.gauss(0.0, self.params["aim_error_m"])
+        self.target_x = cross if cross is not None else ball.x
         self.react_at = game_time + self.params["reaction_s"]
+        # The ball's speed along the table doesn't change (no drag; a bounce
+        # only flips the vertical speed), so the time to arrive is simple.
+        flight = (config.OPP_HIT_Z - ball.z) / ball.vz if ball.vz > 0 else 1.0
+        time_to_move = max(flight - self.params["reaction_s"] - self.ARRIVE_EARLY_S, 0.05)
+        self.speed = max(self.params["max_speed"], abs(self.target_x - self.x) / time_to_move)
 
     def step(self, dt: float, game_time: float):
         if game_time < self.react_at:
             return
-        step = self.params["max_speed"] * dt
+        step = self.speed * dt
         self.x += max(-step, min(step, self.target_x - self.x))
 
     def go_home(self, game_time: float):
-        self.target_x, self.react_at = 0.0, game_time
+        self.target_x, self.react_at, self.speed = 0.0, game_time, self.params["max_speed"]
 
 
 def step_ball(ball: Ball, dt: float) -> bool:
@@ -316,7 +342,8 @@ class GameState:
         self.level = config.DEFAULT_LEVEL
         self.streak = 0          # my consecutive successful returns
         self.best_streak = 0     # record (published to MQTT when it changes)
-        self.pause_timer = 0.0   # seconds left in a MISS / POINT pause
+        self.pause_timer = 0.0   # seconds left in the MISS pause
+        self.last_rally = 0      # volley count of the rally that just ended (shown in MISS)
         self.paddle = Paddle(0.0, (config.PADDLE_Y_MIN_M + config.PADDLE_Y_MAX_M) / 2)
         self.ball = Ball(0.0, config.SERVE_HEIGHT, config.OPP_HIT_Z)
         self.opponent = Opponent()
@@ -365,11 +392,45 @@ class GameState:
     def params(self) -> dict:
         return config.LEVELS[self.level]
 
+    # ---- the rally ramp: everything below follows the volley count (streak)
+    @property
+    def speed_factor(self) -> float:
+        """Current ball speed / the level's start_speed: +speed_ramp per hit
+        this rally, capped at speed_max. 1.0 again after a miss."""
+        p = self.params
+        return min(1.0 + p["speed_ramp"] * self.streak, p["speed_max"] / p["start_speed"])
+
+    @property
+    def max_speed_factor(self) -> float:
+        return self.params["speed_max"] / self.params["start_speed"]
+
+    @property
+    def ball_speed(self) -> float:
+        """m/s along the table for the next shot (before my swing's factor).
+        (The one place the ramped speed comes from: a slow-motion effect would
+        scale this.)"""
+        return self.params["start_speed"] * self.speed_factor
+
+    @property
+    def aim_spread(self) -> float:
+        """The opponent aims within +-this (m) across my side: wider every hit."""
+        return min(config.AIM_SPREAD_START_M + config.AIM_SPREAD_PER_HIT_M * self.streak,
+                   config.AIM_SPREAD_MAX_M)
+
+    @property
+    def zone_scale(self) -> float:
+        """How much of the level's hit tolerance is left at the current speed."""
+        return max(config.ZONE_MIN_SCALE,
+                   1.0 - config.ZONE_SHRINK_PER_SPEED * (self.speed_factor - 1.0))
+
     @property
     def hit_tolerance(self) -> tuple:
-        """(left/right, up/down) tolerance in m for this level and paddle input."""
+        """(left/right, up/down) tolerance in m for this level and paddle
+        input, shrunk for the current speed (zone_scale)."""
         key = "hit_tolerance_camera" if self.camera_mode else "hit_tolerance"
-        return self.params[key]
+        tol_x, tol_y = self.params[key]
+        k = self.zone_scale
+        return tol_x * k, (None if tol_y is None else tol_y * k)
 
     @property
     def zone(self) -> tuple:
@@ -435,7 +496,7 @@ class GameState:
         self._rejected = rejected
         self._watch_for_late_swing(swing, now)
 
-        if self.state in (MISS, POINT):
+        if self.state == MISS:
             if not self.holding:
                 step_ball(self.ball, dt)   # let the ball fly on / drop
             self.opponent.step(dt, self.game_time)
@@ -546,7 +607,8 @@ class GameState:
         self._contact_info = {"time": now, "dx_m": best.x - b.x, "dy_m": best.y - b.y,
                               "off_x_m": off_x, "off_y_m": off_y, "tol_x_m": tol_x, "tol_y_m": tol_y,
                               "tracking_ok": self.tracking_ok, "tracking": self.tracking,
-                              "window": self._window}
+                              "window": self._window, "volley": self.streak,
+                              "speed_x": self.speed_factor}
         self._held_velocity = (b.vx, b.vy, b.vz)
         self.holding = True
 
@@ -574,9 +636,9 @@ class GameState:
         limit = config.PADDLE_X_RANGE_M - config.PADDLE_RADIUS_M / 2
         for attempt in range(20):
             self.ball = Ball(start.x, start.y, start.z)
-            spread = config.LANDING_X_MAX * (1 - attempt / 20)   # narrower each retry
+            spread = self.aim_spread * (1 - attempt / 20)   # wider as the rally grows; narrower each retry
             aim(self.ball, random.uniform(-spread, spread),
-                random.uniform(*config.MY_LANDING_Z), self.params["ball_speed"])
+                random.uniform(*config.MY_LANDING_Z), self.ball_speed)
             cross = predict_crossing(self.ball, config.MY_HIT_Z)
             if cross is not None and abs(cross) <= limit:
                 break
@@ -596,24 +658,18 @@ class GameState:
         target_x = random.uniform(-config.LANDING_X_MAX, config.LANDING_X_MAX)
         self._new_shot(coming_to_me=False)
         self.target = None
-        aim(b, target_x, target_z, self.params["ball_speed"] * factor)
+        aim(b, target_x, target_z, self.ball_speed * factor)
         self.opponent.watch(b, self.game_time)
 
     def _opponent_turn(self) -> list:
-        """The ball reached the opponent's hitting plane (or fell): return it or miss."""
+        """The ball reached the opponent's hitting plane: it always returns it
+        (at the current, ramped-up speed and aim spread)."""
         b = self.ball
-        if (self.bounced_opp_side and b.y > -0.2
-                and abs(self.opponent.x - b.x) <= config.OPP_REACH_M):
-            b.z = config.OPP_HIT_Z
-            b.y = max(b.y, 0.15)
-            self._aim_at_me()
-            self.opponent.go_home(self.game_time + 0.3)
-            return [EVENT_OPP_HIT]
-        # Opponent missed: the point is mine, the rally restarts, streak continues.
-        self.state = POINT
-        self.pause_timer = config.POINT_PAUSE_S
-        self.opponent.go_home(self.game_time + 0.4)
-        return [EVENT_POINT]
+        b.z = config.OPP_HIT_Z
+        b.y = max(b.y, 0.15)
+        self._aim_at_me()
+        self.opponent.go_home(self.game_time + 0.3)
+        return [EVENT_OPP_HIT]
 
     # ------------------------------------------------------------ diagnostics
     def _explain_miss(self, swing: Optional[Swing], now: float):
@@ -677,6 +733,10 @@ class GameState:
         window = info.get("window")
         return {
             "level": self.level,
+            # Hits so far in the rally when this ball came, and the ramp's speed
+            # factor then (taken at contact: a late relabel runs after the reset)
+            "volley": info.get("volley", self.streak),
+            "speed_x": round(info.get("speed_x", self.speed_factor), 2),
             "result": result,
             "reason": reason or "",
             "dx_cm": cm("dx_m"),          # paddle - ball: + = paddle to the right
@@ -705,7 +765,8 @@ class GameState:
     def _my_miss(self) -> list:
         self.state = MISS
         self.pause_timer = config.MISS_PAUSE_S
-        self.streak = 0
+        self.last_rally = self.streak
+        self.streak = 0          # the volley count, and with it the ramp, starts over
         self.target = None
         self.holding = False
         self.contact_time = None

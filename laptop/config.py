@@ -57,7 +57,14 @@ PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever t
 # ---------------------------------------------------------------- Levels
 # The AprilTag ID held up at the start selects the level (or keys 0-2 on the
 # WAITING screen).
-#   ball_speed:    m/s along the table for the opponent's shots (serve/returns)
+# THE GOAL: as many volleys (my hits) in a row as possible. The opponent never
+# misses, and every hit of mine makes the next ball a bit harder (RALLY RAMP
+# below); a miss resets everything to the level's starting values.
+#   start_speed:   m/s along the table of the first ball of a rally (all
+#                  shots, mine and the opponent's, use the current speed)
+#   speed_ramp:    the speed grows by this fraction of start_speed per hit
+#                  (0.03 = +3% per hit, so x1.30 after 10 hits)...
+#   speed_max:     ...up to this many m/s (stays humanly hittable)
 #   hit_tolerance: (left/right, up/down) slack in m around "paddle touches
 #                  ball" (bigger = easier). A hit needs the ball's center within
 #                  paddle radius + ball radius + this of the paddle's center,
@@ -70,18 +77,34 @@ PHYSICS_DT = 1 / 240   # the ball moves in steps of at most this (s), whatever t
 #   Height tolerances are smaller than left/right ones because balls reach my
 #   plane within a narrow height band per level (Beginner 0.36-0.66 m, Club
 #   0.27-0.46, Pro 0.26-0.36): a looser height check would never fail.
-#   opponent:      the AI (see OPPONENT below): reaction delay (s) before it
-#                  starts moving, max speed (m/s) across the table, aim error
-#                  (m, random offset in where it thinks the ball will come)
-#                  Miss rates in the comments: simulated over 400 of my returns.
+#   (the hit tolerances shrink as the speed ramps up, see ZONE_SHRINK_*)
+#   opponent:      how the AI moves (looks only: it never misses): reaction
+#                  delay (s) before it starts sliding toward the ball, and its
+#                  usual top speed (m/s); it goes faster when it has to, so it
+#                  always gets there.
 LEVELS = {
-    0: {"name": "Beginner", "ball_speed": 3.0, "hit_tolerance": (0.12, None), "hit_tolerance_camera": (0.20, None),
-        "opponent": {"reaction_s": 0.28, "max_speed": 1.4, "aim_error_m": 0.10}},   # misses ~20%
-    1: {"name": "Club",     "ball_speed": 3.8, "hit_tolerance": (0.07, 0.05), "hit_tolerance_camera": (0.12, 0.08),
-        "opponent": {"reaction_s": 0.22, "max_speed": 1.8, "aim_error_m": 0.07}},   # misses ~9%
-    2: {"name": "Pro",      "ball_speed": 4.6, "hit_tolerance": (0.03, 0.02), "hit_tolerance_camera": (0.05, 0.03),
-        "opponent": {"reaction_s": 0.16, "max_speed": 2.2, "aim_error_m": 0.06}},   # misses ~3%
+    0: {"name": "Beginner", "start_speed": 3.0, "speed_ramp": 0.03, "speed_max": 4.8,
+        "hit_tolerance": (0.12, None), "hit_tolerance_camera": (0.20, None),
+        "opponent": {"reaction_s": 0.28, "max_speed": 1.4}},
+    1: {"name": "Club",     "start_speed": 3.8, "speed_ramp": 0.04, "speed_max": 5.6,
+        "hit_tolerance": (0.07, 0.05), "hit_tolerance_camera": (0.12, 0.08),
+        "opponent": {"reaction_s": 0.22, "max_speed": 1.8}},
+    2: {"name": "Pro",      "start_speed": 4.6, "speed_ramp": 0.05, "speed_max": 6.4,
+        "hit_tolerance": (0.03, 0.02), "hit_tolerance_camera": (0.05, 0.03),
+        "opponent": {"reaction_s": 0.16, "max_speed": 2.2}},
 }
+# ---------------------------------------------------------------- Rally ramp (all levels)
+# The opponent aims its shots within +-spread m across my side; the spread
+# starts narrow and widens with every hit of mine, up to the table's usable width.
+AIM_SPREAD_START_M = 0.15
+AIM_SPREAD_PER_HIT_M = 0.025
+AIM_SPREAD_MAX_M = 0.55
+# The hit zone's tolerances shrink as the ball speeds up:
+#   tolerance x max(ZONE_MIN_SCALE, 1 - ZONE_SHRINK_PER_SPEED x (speed factor - 1))
+# e.g. at x1.4 speed the tolerances are 80% of the level's, never below 60%.
+# (Only the tolerance shrinks, not the paddle itself.)
+ZONE_SHRINK_PER_SPEED = 0.5
+ZONE_MIN_SCALE = 0.6
 DEFAULT_LEVEL = 0   # used when starting from the keyboard (no tag)
 
 # ---------------------------------------------------------------- Table & world (meters)
@@ -105,7 +128,7 @@ MY_LANDING_Z = (0.35, 1.00)
 # to deep (hard swing).
 OPP_LANDING_Z_SOFT = TABLE_LENGTH / 2 + 0.30
 OPP_LANDING_Z_HARD = TABLE_LENGTH - 0.15
-LANDING_X_MAX = 0.55     # shots land within +-this across the table
+LANDING_X_MAX = 0.55     # my returns land within +-this across the opponent's side
 SERVE_HEIGHT = 0.30      # opponent serves from this height above the table
 
 # ---------------------------------------------------------------- View (first person)
@@ -130,9 +153,7 @@ TARGET_EARLY = True
 PADDLE_KEY_SPEED = 1.2       # m/s with the arrow keys (left/right/up/down)
 
 # ---------------------------------------------------------------- Opponent
-OPP_REACH_M = 0.12       # the opponent returns the ball if its paddle is within this (x) at its plane
 OPP_HIT_HEIGHT = 0.30    # height its paddle is drawn at
-POINT_PAUSE_S = 1.0      # pause after the opponent misses, before the next serve
 
 # ---------------------------------------------------------------- Camera paddle (pose_input.py)
 # Choose with:  python laptop/game.py --input camera   (keyboard is the default)
@@ -209,12 +230,12 @@ HOLD_DECAY_S = 0.04
 HOLD_MAX_SINK_M = 0.04   # ...and goes at most this far past my hitting plane
 
 # ---------------------------------------------------------------- Return speed (harder swing = faster)
-# After a hit the ball goes back at the level's ball_speed times a factor set
+# After a hit the ball goes back at the rally's current speed times a factor set
 # by the swing's peak acceleration: RETURN_FACTOR_MIN at or below
 # RETURN_PEAK_LOW_G, RETURN_FACTOR_MAX at or above RETURN_PEAK_HIGH_G, linear
 # in between. The same factor also sets how DEEP the return lands on the
-# opponent's side (OPP_LANDING_Z_SOFT .. _HARD). The opponent's shots always
-# use the level's speed. Hits without a measured peak use 1.0.
+# opponent's side (OPP_LANDING_Z_SOFT .. _HARD). The opponent's shots use the
+# current speed without a factor. Hits without a measured peak use 1.0.
 RETURN_PEAK_LOW_G = 2.2        # = the IMU's MIN_ACCEL_PEAK_G: the softest swing that counts
 RETURN_PEAK_HIGH_G = 5.5       # about the hardest swings in the hand tests
 RETURN_FACTOR_MIN = 0.8
@@ -224,16 +245,21 @@ RETURN_FACTOR_MAX = 1.6
 SWING_METER_MAX_G = 6.0        # top of the meter
 SWING_METER_FLASH_S = 0.5      # how long the meter flashes after a swing event
 
+# ---------------------------------------------------------------- Score display (draw.py)
+SCORE_POP_S = 0.3              # the volley count pops (grows, then settles) this long on each hit
+HIGH_SCORE_BANNER_S = 2.0      # "HIGH SCORE!" banner when the count passes the record
+
 # ---------------------------------------------------------------- Sounds (sounds.py)
 # Which sound when: see the table at the top of sounds.py. Files in
-# assets/sounds/ (hit, tick, record, point, death, victory .wav); missing
+# assets/sounds/ (hit, tick, record, death, victory .wav); missing
 # ones are synthesized.
 SOUND_MUTED = False          # True = no sounds at all (no audio device is opened)
 SOUND_VOLUME = 0.5           # 0..1
 SOUND_SAMPLE_RATE = 44100    # used if the speaker supports it, else its own rate
-# A new record gets the "record" chime (when the streak passes it) and the
-# victory fanfare (when that streak ends) only if it is at least this long;
-# a shorter one just gets the hit tock and, at the end, the death song.
+# A new record gets the "record" chime + HIGH SCORE banner (when the volley
+# count passes it) and the victory fanfare (when that rally ends) only if it
+# is at least this long; a shorter one just gets the hit tock and, at the
+# end, the death song.
 MIN_RECORD_FOR_FANFARE = 3
 SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this long
 

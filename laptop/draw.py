@@ -30,7 +30,8 @@ ZONE_OFF = (255, 170, 60)     # target zone, paddle not in it yet
 ZONE_ON = (90, 230, 120)      # target zone, paddle center inside: in position
 TARGET_LOCK_S = 0.25          # "lock-on" animation when the target locks (ball bounced)
 STATE_COLORS = {gs.WAITING: (120, 180, 255), gs.PLAYING: (120, 220, 140),
-                gs.MISS: (255, 110, 110), gs.POINT: (120, 220, 140)}
+                gs.MISS: (255, 110, 110)}
+GOLD = (255, 205, 70)
 
 
 def P(x, y, z):
@@ -46,11 +47,14 @@ class Renderer:
         self.big_font = pygame.font.SysFont(None, 96)
         self.reason_font = pygame.font.SysFont(None, 64)
         self.small_font = pygame.font.SysFont(None, 26)
+        self.score_font = pygame.font.SysFont(None, 130)
+        self._score_shown = None     # volley count last drawn, to start the pop
+        self._score_pop_at = -1e9    # pygame ticks (ms) of the last increase
         self._shown_target = None    # target as drawn: glides toward the real one
         self._lock_time = None       # game_time the current target locked
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
-             mqtt_status=None, swing_info=None, sound_notes=None):
+             mqtt_status=None, swing_info=None, sound_notes=None, high_score_age=None):
         """Draw one frame.
 
         paddle_src (optional) adds its messages ("no hand", calibration).
@@ -69,12 +73,29 @@ class Renderer:
             self._draw_swing_meter(game, swing_info)
         if sound_notes:
             self._draw_sound_notes(sound_notes)
+        if high_score_age is not None and high_score_age < config.HIGH_SCORE_BANNER_S:
+            self._draw_high_score(high_score_age)
 
     def _draw_sound_notes(self, notes):
-        """Last few sounds and why they played (top center, under the badge)."""
+        """Last few sounds and why they played (left, under the tracking badge)."""
         for i, text in enumerate(notes):
             surf = self.small_font.render(f"sound {text}", True, DIM_TEXT)
-            self.screen.blit(surf, surf.get_rect(center=(self.screen.get_width() / 2, 52 + 22 * i)))
+            self.screen.blit(surf, (20, 118 + 22 * i))
+
+    def _draw_high_score(self, age: float):
+        """Big "HIGH SCORE!" banner, popping in, then fading out."""
+        w = self.screen.get_width()
+        grow = min(1.0, age / 0.15)                                  # pops in over 0.15 s
+        fade = min(1.0, (config.HIGH_SCORE_BANNER_S - age) / 0.4)    # fades over the last 0.4 s
+        text = self.big_font.render("HIGH SCORE!", True, GOLD)
+        scale = 0.6 + 0.4 * grow
+        text = pygame.transform.smoothscale_by(text, scale)
+        text.set_alpha(int(255 * fade))
+        panel = pygame.Surface((w, text.get_height() + 24), pygame.SRCALPHA)
+        panel.fill((40, 26, 0, int(170 * fade)))
+        y = 190
+        self.screen.blit(panel, (0, y - panel.get_height() / 2))
+        self.screen.blit(text, text.get_rect(center=(w / 2, y)))
 
     def _draw_swing_meter(self, game: gs.GameState, info: dict):
         """Bottom right: last swing's peak (bar), flashing on each new swing, plus
@@ -147,7 +168,7 @@ class Renderer:
         if game.state == gs.WAITING:
             self._draw_waiting(game, paddle_src, tags_on)
         elif game.state == gs.MISS:
-            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.24)
+            self._center_text("MISS", self.big_font, STATE_COLORS[gs.MISS], h * 0.265)
             if game.miss_text:   # why: big enough to read mid-rally
                 lines = game.miss_text.split("\n")   # 2nd line: details (e.g. which way)
                 panel = pygame.Surface((self.screen.get_width(), 70 + 40 * (len(lines) - 1)),
@@ -157,9 +178,6 @@ class Renderer:
                 for i, line in enumerate(lines):
                     self._center_text(line, self.reason_font if i == 0 else self.font, CALIBRATE,
                                       h * 0.36 + (0 if i == 0 else 22 + 38 * i))
-        elif game.state == gs.POINT:
-            self._center_text("POINT!  opponent missed", self.font, STATE_COLORS[gs.POINT], h * 0.30)
-            self._center_text("your streak continues", self.small_font, DIM_TEXT, h * 0.30 + 32)
 
     # ------------------------------------------------------------ 3D scene
     def _draw_scene(self, game: gs.GameState):
@@ -320,10 +338,40 @@ class Renderer:
         self.screen.blit(lvl, (20, 52))
 
         w = self.screen.get_width()
-        streak = self.font.render(f"Streak: {game.streak}", True, TEXT)
+        self._draw_volleys(game)
+        # Best (smaller, top right) and the rally's speed: "Speed x1.40" + bar
         best = self.font.render(f"Best: {game.best_streak}", True, TEXT)
-        self.screen.blit(streak, (w - streak.get_width() - 20, 16))
-        self.screen.blit(best, (w - best.get_width() - 20, 52))
+        self.screen.blit(best, (w - best.get_width() - 20, 14))
+        factor, top = game.speed_factor, game.max_speed_factor
+        label = self.small_font.render(f"Speed x{factor:.2f}", True, TEXT if factor > 1 else DIM_TEXT)
+        self.screen.blit(label, (w - label.get_width() - 20, 46))
+        bar = pygame.Rect(w - 20 - 150, 70, 150, 8)
+        pygame.draw.rect(self.screen, (40, 46, 62), bar, border_radius=4)
+        frac = 0 if top <= 1 else (factor - 1) / (top - 1)
+        if frac > 0:
+            color = GOLD if frac >= 1 else (255, int(200 - 120 * frac), 80)   # warmer as it speeds up
+            pygame.draw.rect(self.screen, color, (bar.x, bar.y, max(8, int(bar.width * frac)), bar.height),
+                             border_radius=4)
+
+    def _draw_volleys(self, game: gs.GameState):
+        """The volley count, big at the top center: pops on every hit. During
+        MISS it shows the rally that just ended (dimmed)."""
+        w = self.screen.get_width()
+        count = game.last_rally if game.state == gs.MISS else game.streak
+        now = pygame.time.get_ticks()
+        if self._score_shown is not None and count > self._score_shown:
+            self._score_pop_at = now
+        self._score_shown = count
+        age = (now - self._score_pop_at) / 1000
+        pop = max(0.0, 1 - age / config.SCORE_POP_S) if config.SCORE_POP_S > 0 else 0
+        color = (STATE_COLORS[gs.MISS] if game.state == gs.MISS
+                 else GOLD if game.streak > 0 and game.streak >= game.best_streak else TEXT)
+        num = self.score_font.render(str(count), True, color)
+        if pop > 0:
+            num = pygame.transform.smoothscale_by(num, 1 + 0.3 * pop)
+        self.screen.blit(num, num.get_rect(center=(w / 2, 70)))
+        label = self.small_font.render("VOLLEYS", True, DIM_TEXT)
+        self.screen.blit(label, label.get_rect(center=(w / 2, 128)))
 
     def _draw_waiting(self, game: gs.GameState, paddle_src, tags_on: bool):
         h = self.screen.get_height()
@@ -361,7 +409,7 @@ class Renderer:
                 self._center_text(line, self.font if i == 0 else self.small_font, CALIBRATE,
                                   h * 0.72 + i * 34)
         elif src.kind == "camera":
-            # Small fixed badge (top center): how the hand is being found
+            # Small fixed badge (top left, under the level): how the hand is being found
             labels = {"wrist": "tracking: wrist", "hand": "tracking: fallback (knuckles)",
                       "elbow": "tracking: fallback (elbow)", "hold": "tracking: holding last position",
                       "lost": "tracking: LOST (paddle frozen)"}
@@ -369,7 +417,7 @@ class Renderer:
                       "hold": (170, 90, 20), "lost": (200, 50, 60)}
             text = self.small_font.render(f"  {labels.get(src.tracking, src.tracking)}  ", True,
                                           (255, 255, 255))
-            box = text.get_rect(center=(self.screen.get_width() / 2, 22))
+            box = text.get_rect(topleft=(24, 84))
             pygame.draw.rect(self.screen, colors.get(src.tracking, (90, 90, 90)), box.inflate(8, 8),
                              border_radius=6)
             self.screen.blit(text, box)

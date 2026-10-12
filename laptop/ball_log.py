@@ -15,7 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # dx/dy = paddle center - ball (cm; + = paddle right / higher), off_x/off_y = how far
 # outside the hit zone (0 = inside; off_y empty = height not checked), tol = the
 # level's tolerances, tracking = how the hand was found at contact.
-COLUMNS = ["time", "level", "mode", "result", "reason", "dx_cm", "dy_cm", "off_x_cm", "off_y_cm",
+# volley = hits so far in the rally when the ball came, speed_x = the ramp's speed factor then.
+COLUMNS = ["time", "level", "mode", "volley", "speed_x", "result", "reason", "dx_cm", "dy_cm", "off_x_cm", "off_y_cm",
            "tol_x_cm", "tol_y_cm", "swing_offset_ms", "swing_window_ms", "swing_peak_g",
            "swing_peak_dps", "tracking", "hand_tracked", "rejected_why"]
 REASON_TEXT = {

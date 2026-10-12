@@ -139,6 +139,7 @@ def main():
     player = sounds.SoundPlayer()          # own thread; config.SOUND_MUTED turns it off
     sound_rules = sounds.SoundRules(game.best_streak)   # which sound when (see sounds.py)
     sound_notes = []                       # (time, "name: reason") shown on screen
+    high_score_at = None                   # when the HIGH SCORE banner started (with the chime)
 
     running = True
     try:
@@ -188,6 +189,8 @@ def main():
                 player.play(name)
                 line = f"SOUND {name}: {reason}"
                 event_log.write(line)
+                if name == "record":
+                    high_score_at = now    # the banner goes with the chime (same rule)
                 if name != "tick":         # ticks: in the log only (two per shot)
                     print(line)
                     sound_notes.append((now, f"{name}: {reason}"))
@@ -204,7 +207,8 @@ def main():
             renderer.draw(game, paddle_src, view, camera_error=getattr(camera, "error", None),
                           mqtt_status=None if mqtt is None else (mqtt.connected, mqtt.status()),
                           swing_info=swing_display(swing_src, mqtt, now),
-                          sound_notes=[s for _, s in sound_notes])
+                          sound_notes=[s for _, s in sound_notes],
+                          high_score_age=None if high_score_at is None else now - high_score_at)
             pygame.display.flip()
     finally:
         game.flush_results()
