@@ -22,8 +22,15 @@ tools/    helpers: AprilTag printing, motion capture, voice / MQTT / IMU test to
 assets/   sounds, AprilTag pages, models (pose, minifig YOLO), recorded motions
 docs/     write-up material and screenshots of every screen
 data/     session logs written by the game (git-ignored) + session_results.md
-unoq/     empty: the board code lives in github.com/clabar01/ArduinoApps (paddle_imu, local_broker)
+unoq/     empty: the board code lives in the ArduinoApps repo (see Board code below)
 ```
+
+## Board code
+
+The Arduino UNO Q side is in the ArduinoApps repo:
+
+- [paddle_imu](https://github.com/clabar01/ArduinoApps/tree/main/paddle_imu): reads the paddle's MPU6050 at 100 Hz, detects swings ([swing_detector.py](https://github.com/clabar01/ArduinoApps/blob/main/paddle_imu/python/swing_detector.py)), publishes them over MQTT, and shows the game on the LED matrix
+- [local_broker](https://github.com/clabar01/ArduinoApps/tree/main/local_broker): Mosquitto MQTT broker on the board, so swings reach the laptop over local WiFi (bridged to broker.hivemq.com as a fallback)
 
 ## Install (macOS, Python 3.14)
 
