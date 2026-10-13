@@ -404,6 +404,7 @@ class GameState:
         self.opponent = Opponent()
         self.game_time = 0.0     # seconds of play (drives the opponent)
         self.camera_mode = False   # camera paddle: use the level's hit_tolerance_camera
+        self.opponent_name = ""    # "blue" / "green": the picked opponent (cosmetic; for the ball log)
         # Swing timing window (before, after) for the NEXT contact; game.py sets
         # it every frame from how swings are arriving (local broker or not).
         self.swing_window = config.SWING_WINDOW_FAST
@@ -1043,6 +1044,7 @@ class GameState:
             # = smash return, miss = wasted), and the commands heard before it
             "smash": "yes" if info.get("smash") else "",
             "voice": info.get("voice", ""),
+            "opponent": self.opponent_name,   # which opponent figure was picked (looks only)
         }
 
     def flush_results(self):

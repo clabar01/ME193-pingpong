@@ -6,6 +6,7 @@ Run from the repo root:
     python laptop/game.py --tags            # keyboard paddle + AprilTags
     add --no-imu to ignore the paddle's swing sensor (every ball counts as swung)
     add --no-publish to any of them: never publish the record (for testing)
+    add --opponent blue|green to skip the "Pick your opponent" screen
 
 Swings: the paddle IMU (over MQTT) in every mode; with the keyboard paddle,
 Space is also a swing. The record on MQTT is only published with
@@ -26,7 +27,9 @@ import config
 import draw
 import game_state as gs
 import inputs
+import minifig_input
 import mqtt_client
+import opponent
 import sounds
 import speech
 import voice
@@ -51,7 +54,13 @@ def make_sources(args, start_x: float, start_y: float):
         import apriltag_input
         tags = apriltag_input.TagProcessor()
         processors.append(tags)
+    minifig = None
     if processors:
+        # The opponent select screen's minifig detector shares the camera; it
+        # only runs while that screen is up (MinifigProcessor.active)
+        import minifig_input
+        minifig = minifig_input.MinifigProcessor()
+        processors.append(minifig)
         import camera as camera_mod
         camera = camera_mod.Camera(processors)
         camera.start()
@@ -62,7 +71,7 @@ def make_sources(args, start_x: float, start_y: float):
     else:
         paddle_src = inputs.KeyboardPaddle(start_x=start_x, start_y=start_y)
     tag_src = apriltag_input.TagStart(tags) if tags is not None else None
-    return camera, paddle_src, tag_src
+    return camera, paddle_src, tag_src, minifig
 
 
 def swing_display(swing_src, mqtt, now: float) -> dict:
@@ -170,6 +179,8 @@ def main():
                         help="start with the debug overlay on (D toggles it)")
     parser.add_argument("--no-voice", action="store_true",
                         help="no voice commands (no microphone, no text-to-speech)")
+    parser.add_argument("--opponent", choices=sorted(opponent.PERSONALITIES),
+                        help="skip the opponent select screen")
     parser.add_argument("--no-publish", action="store_true",
                         help="never publish the record to the score topic (for testing)")
     args = parser.parse_args()
@@ -185,7 +196,7 @@ def main():
     event_log = ball_log.EventLog()               # game events + sounds, for tracing
     renderer = draw.Renderer(screen, debug=args.debug or config.DEBUG_OVERLAY)   # D toggles debug
 
-    camera, paddle_src, tag_src = make_sources(args, game.paddle.x, game.paddle.y)
+    camera, paddle_src, tag_src, minifig = make_sources(args, game.paddle.x, game.paddle.y)
     # IMU swings arrive over MQTT, so the IMU needs MQTT on.
     imu_active = config.MQTT_ENABLED and not args.no_imu
     # Only real play may publish the record: camera paddle AND IMU swings.
@@ -215,6 +226,36 @@ def main():
     # ONE message at a time: the newest replaces the old (see draw.py)
     banner = None                          # (text, kind, start time); kind good / bad / power / neutral
     voice_note = None                      # (text, "ok" / "info" / "no", time) shown by the mic
+    # Pick your opponent (before the level select): a minifig to the camera,
+    # B / G, or "blue" / "green". The figure is looks only (opponent.py).
+    clips = opponent.load_clips()          # recorded motions (assets/motions) or procedural
+    print("opponent motions: " + ", ".join(f"{n} {c['source']}" for n, c in clips.items()))
+    figures = {c: opponent.OpponentFigure(c, clips) for c in opponent.PERSONALITIES}
+    previews = {c: opponent.OpponentFigure(c, clips) for c in opponent.PERSONALITIES}
+    picker = minifig_input.OpponentPicker(minifig)
+    opponent_color = args.opponent or config.OPPONENT_DEFAULT   # None = show the select screen first
+    chosen_at = None                       # when it was picked (the "BLUE chosen!" screen)
+    select_note = None                     # one message if the model / camera isn't available
+    if opponent_color is None:
+        if minifig is not None:
+            minifig.active.set()
+        else:
+            select_note = "No camera: press B or G"
+    else:
+        game.opponent_name = opponent_color
+        renderer.opponent_figure = figures[opponent_color]
+    calibrate_after_pick = False           # restart the camera calibration once picked
+    fig_ms = []                            # time to pose the figure each frame (ms), for the summary
+
+    def choose(color: str, how: str):
+        """Pick (or switch to) an opponent: the figure, the CSV column, the log."""
+        nonlocal opponent_color
+        opponent_color = color
+        game.opponent_name = color
+        renderer.opponent_figure = figures[color]
+        line = f"OPPONENT {color} ({how})"
+        print(line)
+        event_log.write(line)
     link_logged = None                     # last fast path written to the events log
     swings_logged = 0                      # mqtt.swing_count already logged
     rejected_logged = None                 # last rejected move already logged
@@ -238,7 +279,58 @@ def main():
                 if game.state in (gs.WAITING, gs.GAME_OVER):
                     paddle_src.handle_event(event)   # e.g. C = recalibrate the camera
 
+            # ---- Opponent select screen (before calibration and the level select)
+            if opponent_color is None or (chosen_at is not None and now - chosen_at < config.OPPONENT_CHOSEN_S):
+                if minifig is not None and minifig.error and select_note is None:
+                    select_note = "Can't load the minifig model: press B or G"
+                if opponent_color is None:
+                    pick = None
+                    for action, value in key_src.poll():            # B / G (Space etc. do nothing here)
+                        if action == "opponent":
+                            pick = (value, "key")
+                    for command, _, _ in listener.poll():
+                        if command in opponent.PERSONALITIES:
+                            pick = (command, "voice")
+                            voice_note = (command, "ok", now)
+                        else:
+                            voice_note = (f"{command}: pick an opponent first", "no", now)
+                    if pick is None and picker.available:
+                        color = picker.update(now)                  # minifig seen steadily for 1 s
+                        if color is not None:
+                            pick = (color, f"minifig, seen {config.MINIFIG_HOLD_S:.1f} s")
+                    if pick is not None:
+                        choose(*pick)
+                        chosen_at, calibrate_after_pick = now, True
+                        if minifig is not None:
+                            minifig.active.clear()                  # YOLO off: not needed during play
+                else:
+                    key_src.poll()
+                    listener.poll()
+                for _, line in listener.poll_log():
+                    print(line)
+                    event_log.write(line)
+                for command, why, _ in listener.poll_rejected():
+                    voice_note = (f"{command}: {why}", "no", now)
+                if mqtt is not None:
+                    mqtt.update(game)                               # (loads the record meanwhile)
+                for color, fig in previews.items():
+                    fig.preview_update(dt, react=color == opponent_color)
+                view = camera.preview_surface() if camera is not None else None
+                renderer.draw_select(previews, picker, view, opponent_color, now - (chosen_at or now),
+                                     select_note, (listener.status, voice_note), now)
+                pygame.display.flip()
+                continue
+            if calibrate_after_pick:
+                calibrate_after_pick = False
+                if hasattr(paddle_src, "start_calibration"):
+                    paddle_src.start_calibration()                  # its countdown starts now
+
             actions = key_src.poll()
+            # B / G (or "blue" / "green") on the start and GAME OVER screens switch the opponent
+            for action, value in [a for a in actions if a[0] == "opponent"]:
+                if game.state in (gs.WAITING, gs.GAME_OVER):
+                    choose(value, "key")
+            actions = [a for a in actions if a[0] != "opponent"]
             voice_commands = listener.poll()                # handled one by one below
             for _, line in listener.poll_log():
                 print(line)
@@ -268,6 +360,14 @@ def main():
             # Voice commands, one at a time so each gets its own note by the mic
             for command, heard, _ in voice_commands:
                 game.note_voice(command)                    # (CSV: commands before each ball)
+                if command in opponent.PERSONALITIES:       # "blue" / "green": switch opponent
+                    if game.state in (gs.WAITING, gs.GAME_OVER):
+                        choose(command, "voice")
+                        voice_note = (command, "ok", now)
+                    else:
+                        voice_note = (f"{command}: not now", "no", now)
+                        event_log.write(f"VOICE {command!r} not done: {command}: not now")
+                    continue
                 if command == "score":                      # say it out loud
                     count = game.last_rally if game.state == gs.GAME_OVER else game.streak
                     text = f"{count} volleys. Best {game.best_streak}."
@@ -313,6 +413,11 @@ def main():
                                     f"failed {'; '.join(rej.failed or []) or '?'}")
             rejected = mqtt.last_rejected if mqtt is not None and swing_src.kind != "always" else None
             events += game.update(dt, now, swing_src.last_swing(now), rejected)
+            if renderer.opponent_figure is not None:
+                # Looks only: poses the figure from the game state (never changes it)
+                t_fig = time.perf_counter()
+                renderer.opponent_figure.update(game, dt, events)
+                fig_ms.append((time.perf_counter() - t_fig) * 1000)
             for record in game.take_results():   # (held back during the extra-life countdown)
                 log.add(record)
             if gs.EVENT_LIFE_OFFER in events and tag_src is not None:
@@ -380,6 +485,10 @@ def main():
         while game.ball_results:
             log.add(game.ball_results.pop(0))
         print("\n" + log.summary())
+        if fig_ms:
+            ordered = sorted(fig_ms)
+            print(f"Opponent figure ({opponent_color}): posing took median {ordered[len(ordered) // 2]:.2f} ms, "
+                  f"max {ordered[-1]:.2f} ms per frame over {len(ordered)} frames")
         if mqtt is not None:
             print(mqtt.summary())
         log.close()

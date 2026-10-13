@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # voice = voice commands heard since the previous ball.
 COLUMNS = ["time", "level", "mode", "volley", "speed_x", "result", "reason", "dx_cm", "dy_cm", "off_x_cm", "off_y_cm",
            "tol_x_cm", "tol_y_cm", "swing_offset_ms", "swing_window_ms", "swing_peak_g",
-           "swing_peak_dps", "tracking", "hand_tracked", "rejected_why", "powerup", "smash", "voice"]
+           "swing_peak_dps", "tracking", "hand_tracked", "rejected_why", "powerup", "smash", "voice", "opponent"]
 REASON_TEXT = {
     "OUT_OF_ZONE": "out of zone (paddle not on the ball)",
     "NO_SWING": "no swing",

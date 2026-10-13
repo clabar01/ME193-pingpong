@@ -17,3 +17,6 @@ The camera view shows a drawn stand-in figure instead of the webcam picture.
 | `9_voice_smash_armed.png` | Voice "smash" armed: ring on the ball, glowing bolt, mic with the last command, swing force "4.2 g" |
 | `10_voice_paused.png` | Voice "pause" |
 | `11_voice_smash_armed_banner.png` | "smash" said while the return flies away: SMASH ARMED banner, ring on the ball, glowing bolt, "smash: armed" by the mic |
+| `12_opponent_select.png` | Pick your opponent: both figures, the camera with the YOLO box on a held-up green minifig (a dataset photo here), the hold bar filling |
+| `13_opponent_chosen.png` | GREEN chosen! (green celebrates; blue nods) |
+| `14_opponent_blue_windup.png`, `15_opponent_green_windup.png` | Each opponent winding up for a forehand as the ball comes (green's swing is bigger) |

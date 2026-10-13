@@ -180,6 +180,21 @@ CAMERA_INDEX = 0             # 0 = built-in webcam; try 1 for an external camera
 CAMERA_WIDTH = 640           # requested capture size (smaller = faster pose detection)
 CAMERA_HEIGHT = 480
 POSE_MODEL_PATH = "assets/models/pose_landmarker_lite.task"   # relative to the repo root
+
+# --- Pick your opponent (minifig_input.py, opponent.py) ---------------------
+# Before the level select, hold a blue or green minifig up to the camera. The
+# detector is the YOLOv8n trained in the door-to-door project (mini-fig-yolo,
+# models/best.pt), converted once to ONNX (tools/export_minifig_onnx.py), run
+# with OpenCV DNN only on that screen.
+MINIFIG_MODEL_PATH = "assets/models/minifig_yolov8n.onnx"
+MINIFIG_IMG_SIZE = 640       # the size the model was trained / exported at
+MINIFIG_CONF = 0.5           # same threshold as detect_live.py
+MINIFIG_HZ = 8               # detections per second on the select screen (camera thread)
+MINIFIG_HOLD_S = 1.0         # a color must be seen this long to count...
+MINIFIG_GAP_S = 0.35         # ...forgiving gaps (missed frames) up to this long
+OPPONENT_CHOSEN_S = 1.6      # "BLUE chosen!" + preview, then on to calibration / levels
+OPPONENT_KEYS = {"b": "blue", "g": "green"}
+OPPONENT_DEFAULT = None      # "blue" / "green" = skip the select screen (or game.py --opponent)
 TRACK_WRIST = "right"        # "right" or "left": which of YOUR wrists moves the paddle
 # A wrist counts as detected only if MediaPipe is at least this confident it's
 # visible (0..1). The real paddle in the hand often hides the wrist, so below
@@ -326,7 +341,7 @@ SOUND_SHOW_S = 2.5           # each sound's name + reason stays on screen this l
 VOICE_ENABLED = True
 VOICE_MODEL_PATH = "models/vosk-model-small-en-us-0.15"   # relative to the repo root
 VOICE_COMMANDS = ["smash", "play again", "level one", "level two", "level three",
-                  "pause", "resume", "score"]
+                  "pause", "resume", "score", "blue", "green"]
 VOICE_SAMPLE_RATE = 16000     # what the model expects (the mic is resampled if needed)
 VOICE_COOLDOWN_S = 1.0        # the same command can't trigger twice within this
 # A command counts only if the grammar recognizer heard exactly that phrase

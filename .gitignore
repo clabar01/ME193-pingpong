@@ -11,4 +11,4 @@ data/balls_*.csv
 data/events_*.log
 
 # Vosk speech model (downloaded, ~70 MB; see README)
-models/
+/models/

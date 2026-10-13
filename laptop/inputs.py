@@ -129,8 +129,12 @@ DIGIT_KEYS = {0: (pygame.K_0, pygame.K_KP0), 1: (pygame.K_1, pygame.K_KP1), 2: (
               9: (pygame.K_9, pygame.K_KP9)}
 
 
+OPPONENT_KEYS = {getattr(pygame, f"K_{k}"): color for k, color in config.OPPONENT_KEYS.items()}
+
+
 class KeyboardStart:
-    """Space starts the game at the current level; number keys 1/2/3
+    """B / G pick the blue or green opponent (select screen, or to switch on
+    the start and GAME OVER screens). Space starts the game at the current level; number keys 1/2/3
     (config.KEY_LEVELS) pick that level and start (like holding up a level
     card); S and L play the
     SLOW-MO and EXTRA LIFE cards (for testing without printed tags); X, P and T
@@ -158,6 +162,8 @@ class KeyboardStart:
             self._actions.append(("pause_toggle", None)) # stand-in for "pause" / "resume"
         elif event.key == pygame.K_t:
             self._actions.append(("score", None))        # stand-in for "score" (speaks it)
+        elif event.key in OPPONENT_KEYS:
+            self._actions.append(("opponent", OPPONENT_KEYS[event.key]))   # B / G: pick the opponent
         elif event.key == pygame.K_SPACE:
             self._actions.append(("start", None))   # None = keep the current level
         elif event.key in self.LEVEL_KEYS and self.LEVEL_KEYS[event.key] in config.LEVELS:

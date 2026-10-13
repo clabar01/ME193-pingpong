@@ -26,6 +26,7 @@ import pygame
 
 import config
 import game_state as gs
+import opponent
 import view3d
 
 BACKGROUND = (18, 24, 38)
@@ -105,6 +106,10 @@ class Renderer:
         self._score_pop_at = -1e9    # pygame ticks (ms) of the last increase
         self._shown_target = None    # target as drawn: glides toward the real one
         self._lock_time = None       # game_time the current target locked
+        # The opponent character (opponent.OpponentFigure, set by game.py once
+        # picked); None = the plain red paddle
+        self.opponent_figure = None
+        self._game_view = opponent.Projection.game()
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
              mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None,
@@ -250,6 +255,54 @@ class Renderer:
             color = {"ok": TEXT, "info": DIM_TEXT}.get(note[1], BAD)
             text = self.font.render(note[0], True, color)
             self.screen.blit(text, text.get_rect(midleft=(x + 18, y - 2)))
+
+    # ------------------------------------------------------------ opponent select
+    def draw_select(self, previews, picker, camera_view, chosen, chosen_age, note, voice, now):
+        """Pick your opponent: both figures (idling), the camera with the
+        minifig boxes, and how to pick. Once chosen: "BLUE chosen!" and that
+        figure big (nodding / celebrating)."""
+        s = self.screen
+        w, h = s.get_size()
+        s.fill(BACKGROUND)
+        pygame.draw.rect(s, FLOOR, (0, h * 0.70, w, h * 0.30))
+        if chosen is not None:
+            name = opponent.PERSONALITIES[chosen]["name"]
+            self._center_text(f"{name} chosen!", self.big_font, GOOD, h * 0.13)
+            self._center_text(opponent.PERSONALITIES[chosen]["trait"], self.font, DIM_TEXT, h * 0.23)
+            self._draw_preview(previews[chosen], w / 2, h * 0.60, 380)
+            return
+        self._center_text("Pick your opponent", self.big_font, TEXT, h * 0.12)
+        if note:
+            self._center_text(note, self.font, BAD, h * 0.21)
+        else:
+            self._center_text("Hold up a minifig", self.font, TEXT, h * 0.21)
+        hint = 'or say "blue" / "green"' if note else 'or press B / G   ·   or say "blue" / "green"'
+        self._center_text(hint, self.small_font, DIM_TEXT, h * 0.27)
+        holding = picker.color if picker is not None else None
+        for color, x, key in (("blue", w * 0.24, "B"), ("green", w * 0.76, "G")):
+            p = opponent.PERSONALITIES[color]
+            self._draw_preview(previews[color], x, h * 0.58, 300)
+            self._text_at(p["name"], self.font, TEXT, x, h * 0.86)
+            self._text_at(f"{p['trait']}   [{key}]", self.small_font, DIM_TEXT, x, h * 0.91)
+            if holding == color:     # being held up: a bar fills in MINIFIG_HOLD_S
+                frac = picker.progress(now)
+                bar = pygame.Rect(x - 90, h * 0.95, 180, 10)
+                pygame.draw.rect(s, (40, 46, 62), bar, border_radius=5)
+                pygame.draw.rect(s, GOOD, (bar.x, bar.y, int(bar.w * frac), bar.h), border_radius=5)
+        if camera_view is not None:
+            view = pygame.transform.smoothscale_by(camera_view, 0.9)
+            x, y = w / 2 - view.get_width() / 2, h * 0.36
+            s.blit(view, (x, y))
+            pygame.draw.rect(s, WALL, (x - 1, y - 1, view.get_width() + 2, view.get_height() + 2), 1)
+        if voice is not None:
+            self._draw_voice(*voice, now)
+
+    def _draw_preview(self, fig, cx, cy, height_px):
+        """One figure, standing, centered at (cx, cy), about height_px tall."""
+        root = fig.root
+        dist = 4.0
+        view = opponent.Projection((root[0], root[1] + 0.08, root[2] - dist), height_px * dist / 1.8, (cx, cy))
+        fig.draw(self.screen, view)
 
     def _draw_slow_link(self):
         """Top left, red: swings come the slow way (hivemq, often 0.5-2 s late)
@@ -637,7 +690,10 @@ class Renderer:
         self.screen.blit(layer, (0, 0))
 
     def _draw_opponent(self, opp: gs.Opponent):
-        self._draw_paddle_shape(opp.x, config.OPP_HIT_HEIGHT, config.OPP_HIT_Z, OPPONENT, 220)
+        if self.opponent_figure is not None:
+            self.opponent_figure.draw(self.screen, self._game_view)   # (posed by game.py each frame)
+        else:
+            self._draw_paddle_shape(opp.x, config.OPP_HIT_HEIGHT, config.OPP_HIT_Z, OPPONENT, 220)
 
     def _draw_my_paddle(self, game: gs.GameState):
         p = game.paddle
