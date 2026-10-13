@@ -215,6 +215,9 @@ def main():
     # ONE message at a time: the newest replaces the old (see draw.py)
     banner = None                          # (text, kind, start time); kind good / bad / power / neutral
     voice_note = None                      # (text, "ok" / "info" / "no", time) shown by the mic
+    link_logged = None                     # last fast path written to the events log
+    swings_logged = 0                      # mqtt.swing_count already logged
+    rejected_logged = None                 # last rejected move already logged
 
     running = True
     try:
@@ -290,6 +293,24 @@ def main():
             # shifted late while they come over hivemq (see the hit rule).
             slow = "imu" in swing_src.kind and mqtt is not None and not mqtt.local_ok
             game.swing_window = config.SWING_WINDOW_SLOW if slow else config.SWING_WINDOW_FAST
+            if mqtt is not None:
+                # Events log: which way swings travel, and every swing / rejected
+                # move with its peaks, so a session can be diagnosed afterwards.
+                path = mqtt.fast_path().split(" (")[0]
+                if path != link_logged:
+                    link_logged = path
+                    event_log.write(f"LINK swings + game state via {mqtt.fast_path()}")
+                info = mqtt.last_swing_info
+                if info is not None and info["count"] != swings_logged:
+                    swings_logged = info["count"]
+                    delay = "?" if info["delay_ms"] is None else f"{info['delay_ms']:.0f}"
+                    event_log.write(f"IMU swing #{info['count']} via {info['via']}: {info['peak']:.2f} g, "
+                                    f"{info['peak_gyro'] or 0:.0f} dps, delay {delay} ms")
+                rej = mqtt.last_rejected
+                if rej is not None and rej is not rejected_logged:
+                    rejected_logged = rej
+                    event_log.write(f"IMU rejected move: {rej.peak:.2f} g, {rej.peak_gyro or 0:.0f} dps, "
+                                    f"failed {'; '.join(rej.failed or []) or '?'}")
             rejected = mqtt.last_rejected if mqtt is not None and swing_src.kind != "always" else None
             events += game.update(dt, now, swing_src.last_swing(now), rejected)
             for record in game.take_results():   # (held back during the extra-life countdown)
@@ -352,7 +373,7 @@ def main():
                           sound_notes=[s for _, s in sound_notes],
                           banner=None if banner is None else (banner[0], banner[1], now - banner[2]),
                           now=now, play_again=("imu" in swing_src.kind, tag_src is not None),
-                          voice=(listener.status, voice_note))
+                          voice=(listener.status, voice_note), slow_link=slow)
             pygame.display.flip()
     finally:
         game.flush_results()

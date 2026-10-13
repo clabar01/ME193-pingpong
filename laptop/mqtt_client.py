@@ -118,8 +118,13 @@ class GameMqtt:
         # bridges those topics to hivemq, so if it's down everything still works
         # over hivemq (just slower). Swings are taken from whichever broker
         # delivers them first; the copy from the other one is dropped.
-        self.local_host = (config.LOCAL_BROKER_HOST or board_settings.board_ip()
-                           if config.LOCAL_BROKER_ENABLED else None)
+        # The board's address: config.LOCAL_BROKER_HOST if set, else found by
+        # _find_board() among BOARD_IP + HOSTS of board_secrets.py.
+        self._board_hosts = ([] if not config.LOCAL_BROKER_ENABLED
+                             else [config.LOCAL_BROKER_HOST] if config.LOCAL_BROKER_HOST
+                             else board_settings.board_hosts())
+        self.local_host = self._board_hosts[0] if self._board_hosts else None
+        self.local_search = None       # text while searching for the board, for the screen
         self.local_connected = False   # paho's view: TCP connection up
         # Delays and drops (lists: appended by paho threads, read at quit)
         self.swing_delays = {"local": [], "hivemq": []}   # ms, swing start (board clock) -> laptop
@@ -138,15 +143,47 @@ class GameMqtt:
         self._seen_lock = threading.Lock()   # only paho threads take it (never the game thread)
         self.last_rejected = None      # latest rejected move (Swing with .failed)
         self.local = None
-        if self.local_host:
-            self.local = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-            self.local.on_connect = self._on_local_connect
-            self.local.on_disconnect = self._on_local_disconnect
-            self.local.on_message = self._on_local_message
-            self.local.reconnect_delay_set(config.MQTT_RECONNECT_MIN_S, config.MQTT_RECONNECT_MAX_S)
-            self.local.connect_async(self.local_host, config.LOCAL_BROKER_PORT,
-                                     keepalive=config.LOCAL_KEEPALIVE_S)
-            self.local.loop_start()
+        if self._board_hosts:
+            # Searching takes up to ~1 s per address: in its own thread, so the
+            # game starts at once (over hivemq until the board is found).
+            threading.Thread(target=self._find_board, name="find-board", daemon=True).start()
+
+    def _find_board(self):
+        """Background thread: try each address the board may have (BOARD_IP
+        first) until one accepts a connection on the broker port, then connect
+        the local client there (paho then reconnects to it by itself)."""
+        import socket
+        hosts = self._board_hosts
+        while not self._stopping:
+            self.local_search = f"searching {', '.join(hosts)}"
+            for host in hosts:
+                try:
+                    socket.create_connection((host, config.LOCAL_BROKER_PORT),
+                                             timeout=config.LOCAL_FIND_TIMEOUT_S).close()
+                except OSError:
+                    continue
+                if host != hosts[0]:
+                    print(f"MQTT local: board found at {host}, not at BOARD_IP {hosts[0]}: "
+                          f"set BOARD_IP = \"{host}\" in ~/ArduinoApps/tools/board_secrets.py")
+                self.local_host, self.local_search = host, None
+                self._start_local(host)
+                return
+            print(f"MQTT local: no board broker at {', '.join(hosts)} (port {config.LOCAL_BROKER_PORT}); "
+                  f"swings come over hivemq (slow). Trying again in {config.LOCAL_FIND_RETRY_S:.0f} s")
+            self.local_search = "not found"
+            deadline = time.monotonic() + config.LOCAL_FIND_RETRY_S
+            while time.monotonic() < deadline and not self._stopping:
+                time.sleep(0.2)
+
+    def _start_local(self, host: str):
+        local = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        local.on_connect = self._on_local_connect
+        local.on_disconnect = self._on_local_disconnect
+        local.on_message = self._on_local_message
+        local.reconnect_delay_set(config.MQTT_RECONNECT_MIN_S, config.MQTT_RECONNECT_MAX_S)
+        local.connect_async(host, config.LOCAL_BROKER_PORT, keepalive=config.LOCAL_KEEPALIVE_S)
+        local.loop_start()
+        self.local = local   # last: the game thread only uses it once it's set up
 
     # ------------------------------------------------------------ game -> MQTT
     def update(self, game: gs.GameState):
@@ -184,7 +221,9 @@ class GameMqtt:
         if self.local_ok:
             return f"local {self.local_host}"
         down = ""
-        if self.local_host:
+        if self.local_search:
+            down = f" (board {self.local_search})"
+        elif self.local_host:
             since = self._down_since.get("local")
             down = (f" (local DOWN {time.monotonic() - since:.0f} s)" if since is not None
                     else " (local not answering)" if self.local_connected else " (local down)")

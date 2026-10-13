@@ -108,7 +108,7 @@ class Renderer:
 
     def draw(self, game: gs.GameState, paddle_src=None, camera_view=None, camera_error=None,
              mqtt_status=None, swing_info=None, sound_notes=None, banner=None, now=None,
-             play_again=(False, False), voice=None):
+             play_again=(False, False), voice=None, slow_link=False):
         """Draw one frame.
 
         paddle_src: the paddle source (camera calibration, tracking).
@@ -118,6 +118,7 @@ class Renderer:
                 kind = "good" / "bad" / "power" / "neutral".
         play_again: (a real swing can play again, tags are on).
         voice: (listener status, (note, "ok"/"info"/"no", time) or None), or None.
+        slow_link: IMU swings come over hivemq (board broker not reachable).
         mqtt_status, swing_info, sound_notes: debug overlay only.
         """
         calib = getattr(paddle_src, "calib_info", None)
@@ -154,6 +155,8 @@ class Renderer:
             self._draw_banner(*banner)
         if voice is not None:
             self._draw_voice(*voice, now)
+        if slow_link and calib is None and not self.debug:
+            self._draw_slow_link()
         if camera_error:
             self._center_text(camera_error, self.font, BAD, self.screen.get_height() * 0.9)
         if self.debug:
@@ -247,6 +250,13 @@ class Renderer:
             color = {"ok": TEXT, "info": DIM_TEXT}.get(note[1], BAD)
             text = self.font.render(note[0], True, color)
             self.screen.blit(text, text.get_rect(midleft=(x + 18, y - 2)))
+
+    def _draw_slow_link(self):
+        """Top left, red: swings come the slow way (hivemq, often 0.5-2 s late)
+        because the board's broker isn't reachable. Shown even without the
+        debug overlay: it explains a game full of TOO LATE misses."""
+        text = self.small_font.render("SLOW LINK: board not found, swings arrive late", True, BAD)
+        self.screen.blit(text, (16, 14))
 
     def _draw_paused(self):
         w, h = self.screen.get_size()

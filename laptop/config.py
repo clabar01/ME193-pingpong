@@ -21,6 +21,15 @@ GAME_PUBLISH_HZ = 10                 # game state messages per second on GAME_TO
 LOCAL_BROKER_ENABLED = True
 LOCAL_BROKER_HOST = None
 LOCAL_BROKER_PORT = 1883
+# Finding the board: BOARD_IP first, then every other address in HOSTS of
+# board_secrets.py (campus, home, AirFour.local), each given LOCAL_FIND_TIMEOUT_S
+# to accept a connection on LOCAL_BROKER_PORT. The first one that answers is
+# used (a warning says to update BOARD_IP if it wasn't BOARD_IP). None
+# answering: try them all again every LOCAL_FIND_RETRY_S. Added 2026-10-12
+# after a home session ran entirely over hivemq because BOARD_IP still had
+# the 29BCNet address.
+LOCAL_FIND_TIMEOUT_S = 1.0
+LOCAL_FIND_RETRY_S = 5.0
 # The local broker is on the same WiFi, so its connection can check itself
 # often: with a 5 s keepalive a dead link is noticed (and reconnected) within
 # ~8 s instead of ~45 s. Reconnecting is automatic (MQTT_RECONNECT_*).
