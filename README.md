@@ -17,22 +17,72 @@ screen (pygame), and you hit it back with a real paddle.
 ## Layout
 
 ```
-laptop/   Python game, runs on the laptop (all settings in laptop/config.py)
-unoq/     Code for the Arduino UNO Q (accelerometer + LED matrix)
-assets/   sounds/ and apriltags/
-docs/     write-up material
+laptop/   the game (Python, runs on the laptop); every setting is in laptop/config.py
+tools/    helpers: AprilTag printing, motion capture, voice / MQTT / IMU test tools
+assets/   sounds, AprilTag pages, models (pose, minifig YOLO), recorded motions
+docs/     write-up material and screenshots of every screen
+data/     session logs written by the game (git-ignored) + session_results.md
+unoq/     empty: the board code lives in github.com/clabar01/ArduinoApps (paddle_imu, local_broker)
 ```
 
-## Setup (macOS)
+## Install (macOS, Python 3.14)
 
 ```bash
-brew install portaudio          # needed by pyaudio (without Homebrew: see CLAUDE.md)
+git clone https://github.com/clabar01/ME193-pingpong.git && cd ME193-pingpong
+brew install portaudio          # needed by pyaudio (no Homebrew? see CLAUDE.md, "pyaudio needs PortAudio")
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Broker credentials go in `laptop/board_secrets.py`, which is git-ignored.
+Then download the voice model (next section). The pose and minifig models are
+already in `assets/models/`. Print the AprilTags with `python tools/make_tags.py`
+(pages in `assets/apriltags/`: tags 0/1/2 = Beginner/Club/Pro, 5 = reset the
+record, 10 = SLOW-MO card, 11 = EXTRA LIFE card).
+
+**Board (optional):** the paddle's swing sensor runs on the Arduino UNO Q
+(`paddle_imu` in the ArduinoApps repo). The board's address is set in ONE place,
+`~/ArduinoApps/tools/board_secrets.py` (git-ignored; copy of
+`board_secrets.example.py`): set `BOARD_IP` when you change WiFi. The game also
+tries every address in `HOSTS` and tells you which one answered. No passwords or
+API keys are needed: the MQTT brokers (the board's own Mosquitto and
+broker.hivemq.com) are open.
+
+## Run
+
+```bash
+source venv/bin/activate
+python laptop/game.py --input camera            # the real game: webcam paddle + AprilTags + paddle IMU
+python laptop/game.py                           # keyboard only (no camera, no board needed)
+python laptop/game.py --input camera --no-imu   # camera, but every ball counts as swung (no board)
+```
+
+| Flag | What it does |
+|---|---|
+| `--input camera` | wrist tracking with the webcam + AprilTags + minifig opponent pick (default: `keyboard`) |
+| `--tags` | AprilTags with the keyboard paddle |
+| `--no-imu` | ignore the paddle sensor: every ball counts as swung |
+| `--no-publish` | never publish the record to `ME193/Rogers/CeciLaBarge` (use for testing) |
+| `--opponent blue` / `green` | skip the "Pick your opponent" screen |
+| `--no-voice` | no microphone, no speech |
+| `--debug` | start with the debug overlay on |
+
+The record is only published with `--input camera` and real IMU swings.
+
+**Order of screens:** pick your opponent → calibrate (reach left, right, up,
+down when asked) → pick a level (AprilTag 0/1/2 or keys 1/2/3) → 3-2-1-GO →
+play → GAME OVER (swing, Space or a level card to play again).
+
+| Key | What it does |
+|---|---|
+| B / G | pick the blue / green opponent |
+| 1 / 2 / 3 | start at Beginner / Club / Pro; Space = start / play again at the current level |
+| arrow keys + Space | keyboard paddle: move, swing |
+| S / L | SLOW-MO / EXTRA LIFE card (stand-ins for tags 10 / 11) |
+| X / P / T | voice stand-ins: smash, pause/resume, score |
+| C | recalibrate the camera (start screen) |
+| D | debug overlay on / off |
+| Esc | quit (prints a session summary; logs in `data/`) |
 
 ### Voice commands (Vosk)
 
